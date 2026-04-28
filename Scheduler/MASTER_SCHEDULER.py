@@ -8,14 +8,14 @@ import os
 # ================= 配置区 =================
 # 是否在启动脚本时立即运行一次全流程？
 # True: 立即运行 | False: 等待定时时间点
-RUN_NOW_SWITCH = True 
+RUN_NOW_SWITCH = False 
 
 # 脚本路径定义
-PATH_DAILY = r"C:\ws\data\Database\日线数据\DAILY_UPDATE_MYSQL.py"
-PATH_FACTORS = r"C:\ws\data\Database\因子数据库\UPDATE_FACTORS_INCREMENTAL.py"
-PATH_MINUTES = r"C:\ws\data\Database\分时数据\SYNC_30D_MINUTES.py"
-PATH_ABNORMAL = r"C:\ws\data\Polices\资金异动\CAPITAL_ABNORMAL_SCAN_DATABASE.py"
-PATH_MACD = r"C:\ws\data\Polices\MACD\FIND_MACD_GOLD_CROSS.py"
+PATH_DAILY = r"C:\ws\trading-polices\Database\日线数据\DAILY_UPDATE_MYSQL.py"
+PATH_FACTORS = r"C:\ws\trading-polices\Database\因子数据库\UPDATE_FACTORS_INCREMENTAL.py"
+PATH_MINUTES = r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py"
+PATH_ABNORMAL = r"C:\ws\trading-polices\Polices\资金异动\CAPITAL_ABNORMAL_SCAN_DATABASE.py"
+PATH_MACD = r"C:\ws\trading-polices\Polices\MACD\FIND_MACD_GOLD_CROSS.py"
 
 PYTHON_PATH = sys.executable
 # ==========================================

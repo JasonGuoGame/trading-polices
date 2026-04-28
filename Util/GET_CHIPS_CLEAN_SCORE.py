@@ -91,4 +91,4 @@ def analyze_chips_cleanliness(symbol):
 
 if __name__ == "__main__":
     # 测试一只股票，比如“贵州茅台”或你筛选出来的股票
-    analyze_chips_cleanliness('603060.SH')
+    analyze_chips_cleanliness('688082.SH')
