@@ -1,119 +1,117 @@
-from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
 import datetime
 import subprocess
 import sys
 import os
+import time
 
 # ================= 配置区 =================
-# 是否在启动脚本时立即运行一次全流程？
-# True: 立即运行 | False: 等待定时时间点
-RUN_NOW_SWITCH = False 
-
-# 脚本路径定义
-PATH_DAILY = r"C:\ws\trading-polices\Database\日线数据\DAILY_UPDATE_MYSQL.py"
-PATH_FACTORS = r"C:\ws\trading-polices\Database\因子数据库\UPDATE_FACTORS_INCREMENTAL.py"
-PATH_MINUTES = r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py"
-PATH_ABNORMAL = r"C:\ws\trading-polices\Polices\资金异动\CAPITAL_ABNORMAL_SCAN_DATABASE.py"
-PATH_MACD = r"C:\ws\trading-polices\Polices\MACD\FIND_MACD_GOLD_CROSS.py"
+# 脚本路径定义 (顺序执行全量工作流)
+PIPELINE_QUEUE = [
+    r"C:\ws\trading-polices\Database\日线数据\DAILY_UPDATE_MYSQL.py",
+    r"C:\ws\trading-polices\Database\因子数据库\UPDATE_FACTORS_INCREMENTAL.py",
+    r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py",
+    r"C:\ws\trading-polices\Polices\资金异动\CAPITAL_ABNORMAL_SCAN_DATABASE.py",
+    # AKShare always encountered Remote end closed connection without response
+    r"c:\ws\trading-polices\AKShare\SYNC_THS_FLOW_TO_DB.py", 
+    r"c:\ws\trading-polices\Util\复盘\SCREEN_NEW_20B_STOCKS.py",
+    r"C:\ws\trading-polices\Polices\主线\FIND_THEME_LEADER_FINAL.py",
+    r"C:\ws\trading-polices\Watchlist\SYNC_MOMENTUM_STAGES.py",
+    r"C:\ws\trading-polices\Watchlist\FIND_MACD_X_MONEY_FLOW.py",
+    # r"c:\ws\trading-polices\Polices\分歧转一致\DIVERGENCE_TO_CONSENSUS.py",
+    r"c:\ws\trading-polices\Watchlist\STOCK_ALPHA_SCORING.py",
+    r"c:\ws\trading-polices\Watchlist\STRATEGY_TREND_FOLLOWING.py",
+    r"c:\ws\trading-polices\赚钱效应\MARKET_REGIME_JUDGE.py",
+    r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
+    r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",
+    r"C:\ws\trading-polices\Util\MARKET_SENTIMENT.py"
+]
 
 PYTHON_PATH = sys.executable
 # ==========================================
 
-def run_pipeline(force_run=False):
+def is_within_running_window():
+    """判断当前时刻是否允许开始新的循环"""
     now = datetime.datetime.now()
     current_time = now.strftime("%H:%M")
     
-    print(f"\n" + "="*70)
-    print(f"🔔 任务触发 | 当前系统时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    # 1. 过滤周末
+    if now.weekday() > 4:
+        return False, "周末休息"
 
-    # --- 1. 逻辑判断：是否需要跳过时间检查 ---
-    if not force_run:
-        # A. 过滤周末
-        if now.weekday() > 4:
-            print(f"[{current_time}] 休息日，跳过任务。")
-            return
-
-        # B. 定义交易时间窗口
-        is_morning_session = ("09:55" <= current_time <= "11:40")
-        is_afternoon_session = ("13:25" <= current_time <= "15:10")
-        
-        if not (is_morning_session or is_afternoon_session):
-            print(f"[{current_time}] 非交易时段，脚本不执行。")
-            return
-    else:
-        print(f"🚀 [强制运行模式]：跳过交易时间检查...")
-
-    # --- 2. 模式判定：全量 vs 分时 ---
-    full_sync_hours = ["10:05", "11:05", "14:05", "15:05"]
+    # 2. 定义运行窗口
+    # 10:00开始, 11:30-13:30休息, 16:00以后停止
+    is_morning = ("10:00" <= current_time < "11:30")
+    is_afternoon = ("13:30" <= current_time < "15:30")
     
-    # 检查是否在全量更新时间点附近 (±5分钟)
-    is_full_sync_time = False
-    for target_time in full_sync_hours:
-        target_dt = datetime.datetime.strptime(target_time, "%H:%M")
-        current_dt = datetime.datetime.strptime(current_time, "%H:%M")
-        if abs((current_dt - target_dt).total_seconds()) <= 300:
-            is_full_sync_time = True
-            break
+    if is_morning:
+        return True, "早盘运行中"
+    if is_afternoon:
+        return True, "午盘运行中"
+    
+    return False, "非运行时间段（或中午休市）"
 
-    # 如果是强制运行，或者处于全量时间点
-    if force_run or is_full_sync_time:
-        print(f"🌟 [模式：全量更新] (日线+因子+分时+异动)")
-        pipeline_queue = [PATH_DAILY, PATH_FACTORS, PATH_MINUTES, PATH_ABNORMAL, PATH_MACD]
-    else:
-        print(f"⚡ [模式：分时扫描] (仅分时+异动)")
-        pipeline_queue = [PATH_MINUTES, PATH_ABNORMAL,PATH_MACD]
+def run_one_cycle(cycle_count):
+    """执行一轮完整的工作流"""
+    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"\n" + "🌀" * 5 + f" 启动第 {cycle_count} 轮循环 | 开始时间: {now_str} " + "🌀" * 5)
+    print("=" * 80)
 
-    print(f"⏰ 实际启动时刻：{current_time}")
+    for i, script_path in enumerate(PIPELINE_QUEUE, 1):
+        if not os.path.exists(script_path):
+            print(f"❌ 找不到文件: {script_path}")
+            continue
 
-    # --- 3. 顺序执行脚本 ---
-    for i, script_path in enumerate(pipeline_queue, 1):
         script_name = os.path.basename(script_path)
-        print(f"   >>> 步骤 [{i}/{len(pipeline_queue)}]: 正在执行 {script_name} ...")
+        print(f"▶️  [{i}/{len(PIPELINE_QUEUE)}] 正在执行: {script_name}...")
         
         try:
+            # 运行子进程并等待结束
+            start_ts = time.time()
             result = subprocess.run([PYTHON_PATH, script_path], check=False)
+            duration = time.time() - start_ts
+            
             if result.returncode == 0:
-                print(f"       ✅ 成功。")
+                print(f"   ✅ 完成 (用时: {duration:.1f}s)")
             else:
-                print(f"       ❌ 失败 (退出码: {result.returncode})。中止后续步骤。")
-                break
+                print(f"   ⚠️ 失败 (退出码: {result.returncode})，为了数据安全，中止本轮后续脚本。")
+                return False # 本轮循环失败
         except Exception as e:
-            print(f"       💥 异常: {e}")
-            break
+            print(f"   💥 崩溃: {e}")
+            return False
+            
+    print("=" * 80)
+    print(f"🏁 第 {cycle_count} 轮循环顺利结束。")
+    return True
 
-    print(f"🏁 本轮流水线处理结束。")
-    print("="*70)
+def main_loop():
+    cycle_count = 1
+    print("🚀 往复式流水线调度中心已启动...")
+    print(f"📍 监控脚本总数: {len(PIPELINE_QUEUE)}")
+    print(f"🕒 设定：10:00 准时爆发，11:30-13:30 午休，16:00 鸣金收兵。")
+    print("-" * 60)
+
+    while True:
+        can_run, reason = is_within_running_window()
+        
+        if can_run:
+            # 执行一轮
+            success = run_one_cycle(cycle_count)
+            if success:
+                cycle_count += 1
+            
+            # 每一轮跑完后微调休息 5 秒，防止极端情况下 CPU 负载过高
+            time.sleep(5)
+        else:
+            # 如果没到 10:00 或者处于午休
+            now = datetime.datetime.now().strftime("%H:%M:%S")
+            # 只有在整分钟时打印一次状态，避免刷屏
+            if datetime.datetime.now().second == 0:
+                print(f"😴 等待中... 当前时刻: {now} | 状态: {reason}")
+            
+            time.sleep(1) # 每秒检查一次时间
 
 if __name__ == "__main__":
-    # --- A. 立即运行开关判断 ---
-    if RUN_NOW_SWITCH:
-        print("💡 检测到立即运行开关已打开，正在启动首次全量任务...")
-        run_pipeline(force_run=True)
-
-    # --- B. 配置定时调度器 ---
-    scheduler = BlockingScheduler()
-
-    # 这里的 minute='5,35' 是为了配合你的 10:05, 11:05 等全量点
-    trigger = CronTrigger(
-        day_of_week='mon-fri', 
-        hour='10,11,13,14,15', 
-        minute='5,35',
-        second=0
-    )
-
-    print(f"\n📅 自动化调度中心已就绪")
-    print(f"🚀 定时计划：每小时的 05分 和 35分 自动触发")
-    print("-" * 70)
-
-    scheduler.add_job(
-        run_pipeline,
-        trigger=trigger,
-        id='quant_smart_pipeline',
-        misfire_grace_time=60 
-    )
-
     try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        print("\n👋 调度器已手动关闭。")
+        main_loop()
+    except KeyboardInterrupt:
+        print("\n👋 收到指令，正在安全关闭调度中心...")

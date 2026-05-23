@@ -76,4 +76,4 @@ def get_resistance_levels(symbol):
 
 if __name__ == "__main__":
     # 测试一只股票，比如“贵州茅台”或你自选的票
-    get_resistance_levels('603060.SH')
+    get_resistance_levels('002217.SZ')

@@ -95,4 +95,4 @@ def get_sector_small_dragon(target_sector):
 
 if __name__ == "__main__":
     # 你可以替换为你感兴趣的板块名称，如 '概念-算力概念' 或 'THY3锂'
-    get_sector_small_dragon('TDGN光通信')
+    get_sector_small_dragon('SW1建筑装饰')

@@ -38,7 +38,7 @@ def sync_minute_incremental():
 
     # 3. 获取股票列表并分批同步
     all_stocks = xtdata.get_stock_list_in_sector('沪深A股')
-    all_stocks = [s for s in all_stocks if s.startswith(('60', '00'))] # 只要主板
+    # all_stocks = [s for s in all_stocks if s.startswith(('60', '00'))] # 只要主板
     total_count = len(all_stocks)
     print(f"步骤 3: 准备同步 {total_count} 只股票的增量数据...")
 

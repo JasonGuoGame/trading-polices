@@ -4,10 +4,12 @@ import time
 
 def get_sector_hotness():
     print("正在从东方财富获取行业板块数据，请稍候...")
-    
+    print("正在拉取东方财富实时股东人数数据...")
+    # df = ak.stock_zh_a_gdhs_em()
     # 1. 获取行业板块实时行情
     # 包含字段：板块名称, 涨跌幅, 总市值, 换手率, 成交额, 领涨股票, 等
-    df_industry = ak.stock_board_industry_name_em()
+    stock_zh_a_gdhs_detail_em_df = ak.stock_zh_a_gdhs_detail_em(symbol="000001")
+    print(stock_zh_a_gdhs_detail_em_df)
 
     # for i in range(5):
     #     try:
