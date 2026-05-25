@@ -56,6 +56,9 @@ def run_all_maintenance():
     # B. 维护 trading_review 中的股票池表
     clean_table_by_date_rank(engine_review, "trading_review", "stock_pools", keep_days=10)
 
+    # B. 维护 trading_review 中的股票池表
+    clean_table_by_date_rank(engine_review, "trading_review", "strategy_performance_history", keep_days=20)
+
     print(f"\n[{datetime.datetime.now()}] 🎉 所有表已成功维持在最近 10 个交易日的容量！")
 
 if __name__ == "__main__":
