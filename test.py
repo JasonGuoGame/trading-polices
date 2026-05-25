@@ -1,13 +1,14 @@
 import pandas as pd
 from xtquant import xtdata
 import datetime
+import akshare as ak
 
 def get_market_value_from_qmt(symbol_list):
     """
     通过 MiniQMT 计算总市值 (单位：亿元)
     """
     print(f"正在从 MiniQMT 提取 {len(symbol_list)} 只股票的股本与现价...")
-    
+    df_plan = ak.stock_减持计划_em()
     results = []
     
     # 1. 获取最新行情快照 (获取现价)
