@@ -23,6 +23,7 @@ PIPELINE_QUEUE = [
     r"c:\ws\trading-polices\赚钱效应\MARKET_REGIME_JUDGE.py",
     r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
     r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",
+    r"c:\ws\trading-polices\Util\复盘\ANALYZE_STRATEGY_SCORE_DISTRIBUTION.py",
     r"C:\ws\trading-polices\Util\MARKET_SENTIMENT.py"
 ]
 
