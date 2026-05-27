@@ -42,7 +42,7 @@ def is_within_running_window():
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
     is_morning = ("10:00" <= current_time < "11:30")
-    is_afternoon = ("13:30" <= current_time < "15:30")
+    is_afternoon = ("13:30" <= current_time < "15:20")
     
     if is_morning:
         return True, "早盘运行中"
