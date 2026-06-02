@@ -4,6 +4,7 @@ import datetime
 
 # --- 数据库配置 ---
 DB_URL = 'mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db'
+engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review')
 engine = create_engine(DB_URL)
 
 def analyze_market_sentiment():
@@ -87,6 +88,60 @@ def analyze_market_sentiment():
     elif amount_diff < -100:
         print("💡 1 综合判断：大幅缩量，市场观望情绪浓厚。")
     print("="*40 + "\n")
+
+    # ==========================================
+    # 保存市场宽度数据到 market_breadths
+    # ==========================================
+
+    total_stocks = up_count + down_count + flat_count
+
+    save_sql = text("""
+    INSERT INTO market_breadths (
+        trade_date,
+        total_stocks,
+        advancers,
+        decliners,
+        flat,
+        limit_up,
+        limit_down,
+        created_at
+    )
+    VALUES (
+        :trade_date,
+        :total_stocks,
+        :advancers,
+        :decliners,
+        :flat,
+        :limit_up,
+        :limit_down,
+        :created_at
+    )
+    ON DUPLICATE KEY UPDATE
+        total_stocks = VALUES(total_stocks),
+        advancers = VALUES(advancers),
+        decliners = VALUES(decliners),
+        flat = VALUES(flat),
+        limit_up = VALUES(limit_up),
+        limit_down = VALUES(limit_down),
+        created_at = VALUES(created_at)
+    """)
+
+    with engine_review.begin() as conn:
+        conn.execute(
+            save_sql,
+            {
+                "trade_date": today,
+                "total_stocks": int(total_stocks),
+                "advancers": int(up_count),
+                "decliners": int(down_count),
+                "flat": int(flat_count),
+                "limit_up": int(limit_up),
+                "limit_down": int(limit_down),
+                "created_at": datetime.datetime.now()
+            }
+        )
+
+    print(f"✅ 市场宽度数据已保存: {today}")
 
 if __name__ == "__main__":
     analyze_market_sentiment()
