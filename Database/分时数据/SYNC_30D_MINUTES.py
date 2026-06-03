@@ -9,23 +9,28 @@ DB_URL = 'mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db'
 engine = create_engine(DB_URL)
 
 PERIOD = '1m'
-KEEP_DAYS = 30       # 数据库保留最近30天数据
-BATCH_SIZE = 100     # 增量模式下，每批可以处理更多只股票
+KEEP_DAYS = 8       # 数据库保留最近30天数据
+BATCH_SIZE = 200     # 增量模式下，每批可以处理更多只股票
 # --------------
 
 def sync_minute_incremental():
     xtdata.enable_hello = False
     now = datetime.datetime.now()
     
-    # 1. 自动清理：删除 30 天前的数据
-    print(f"[{now}] 步骤 1: 正在清理 {KEEP_DAYS} 天前的老旧分时数据...")
+    # 1. 自动清理：删除 8 天前的数据
+    # --- 步骤 B: 确定清理 ---
     cutoff_dt = now - datetime.timedelta(days=KEEP_DAYS)
     cutoff_str = cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
+    if now.hour == 10 and now.minute < 10:
+        print(f"🧹 执行例行清理...")
+        with engine.begin() as conn:
+            conn.execute(text(f"DELETE FROM stk_min_kline WHERE trade_time < '{cutoff_str}'"))
+            print(f"清理完成，已移除 {res.rowcount} 行历史数据。")
     
-    with engine.begin() as conn:
-        # 删除操作
-        res = conn.execute(text(f"DELETE FROM stk_min_kline WHERE trade_time < '{cutoff_str}'"))
-        print(f"清理完成，已移除 {res.rowcount} 行历史数据。")
+    # with engine.begin() as conn:
+    #     # 删除操作
+    #     res = conn.execute(text(f"DELETE FROM stk_min_kline WHERE trade_time < '{cutoff_str}'"))
+    #     print(f"清理完成，已移除 {res.rowcount} 行历史数据。")
 
     # 2. 获取股票进度：查出数据库里每只股票目前存到了什么时候
     print("步骤 2: 正在扫描数据库现有进度...")

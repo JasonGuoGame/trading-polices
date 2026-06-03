@@ -20,6 +20,7 @@ PIPELINE_QUEUE = [
     # r"c:\ws\trading-polices\Polices\分歧转一致\DIVERGENCE_TO_CONSENSUS.py",
     r"c:\ws\trading-polices\Watchlist\STOCK_ALPHA_SCORING.py",
     r"c:\ws\trading-polices\Watchlist\STRATEGY_TREND_FOLLOWING.py",
+    r"c:\ws\trading-polices\Watchlist\SYNC_MAIN_FORCE_TO_POOL.py",
     r"c:\ws\trading-polices\赚钱效应\MARKET_REGIME_JUDGE.py",
     r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
     r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",

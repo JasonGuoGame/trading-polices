@@ -30,6 +30,7 @@ def get_score_analysis():
         if pt == 'short' and st == '资金共振金叉': return '3. 0轴金叉共振'
         if pt == 'long' and st == '趋势确立': return '4. MACD+BOLL'
         if pt == 'long' and st == '长线牛': return '5. 价值长线'
+        if pt == 'short' and st == '主力入场': return '主力入场'
         return '其他'
 
     df_signals['strategy_name'] = df_signals.apply(categorize_strategy, axis=1)
