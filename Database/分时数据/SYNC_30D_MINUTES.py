@@ -21,11 +21,11 @@ def sync_minute_incremental():
     # --- 步骤 B: 确定清理 ---
     cutoff_dt = now - datetime.timedelta(days=KEEP_DAYS)
     cutoff_str = cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
-    if now.hour == 10 and now.minute < 10:
+    if now.hour == 10 and now.minute < 15:
         print(f"🧹 执行例行清理...")
         with engine.begin() as conn:
             conn.execute(text(f"DELETE FROM stk_min_kline WHERE trade_time < '{cutoff_str}'"))
-            print(f"清理完成，已移除 {res.rowcount} 行历史数据。")
+            # print(f"清理完成，已移除 {res.rowcount} 行历史数据。")
     
     # with engine.begin() as conn:
     #     # 删除操作
