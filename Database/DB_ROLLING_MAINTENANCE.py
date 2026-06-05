@@ -59,8 +59,11 @@ def run_all_maintenance():
     # B. 维护 strategy_performance_history 
     clean_table_by_date_rank(engine_review, "trading_review", "strategy_performance_history", keep_days=15)
 
-    # B. 维护 strategy_score_analysis 
+    # c. 维护 strategy_score_analysis 
     clean_table_by_date_rank(engine_review, "trading_review", "strategy_score_analysis", keep_days=15)
+
+    # d. 维护 stk_auction_signal 
+    clean_table_by_date_rank(engine_quant, "quant_db", "stk_auction_signal", keep_days=15)
 
     print(f"\n[{datetime.datetime.now()}] 🎉 所有表已成功维持在最近 10 个交易日的容量！")
 

@@ -91,7 +91,7 @@ def save_to_stock_pool(df_results, trade_date):
             'status': '分歧反包',
             'tags': json.dumps(tags_dict, ensure_ascii=False),
             'notes': f"放量分歧修复{row['repair_depth']}%",
-            'is_watch_focus': 1,
+            'is_watch_focus': 0,
             'watch_level': watch_lvl,
             'created_at': now,
             'updated_at': now

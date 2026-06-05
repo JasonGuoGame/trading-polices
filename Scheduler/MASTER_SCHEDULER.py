@@ -29,8 +29,13 @@ PIPELINE_QUEUE = [
     r"C:\ws\trading-polices\Util\MARKET_SENTIMENT.py"
 ]
 
+# 1. 竞价同步脚本路径
+PATH_AUCTION = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_AUCTION_CORE_LOGIC.py"
+
 PYTHON_PATH = sys.executable
 # ==========================================
+
+auction_synced_today = None 
 
 def is_within_running_window():
     """判断当前时刻是否允许开始新的循环"""
@@ -43,8 +48,8 @@ def is_within_running_window():
 
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
-    is_morning = ("10:00" <= current_time < "11:30")
-    is_afternoon = ("13:30" <= current_time < "15:20")
+    is_morning = ("09:50" <= current_time < "11:30")
+    is_afternoon = ("13:20" <= current_time < "15:18")
     
     if is_morning:
         return True, "早盘运行中"
@@ -87,6 +92,7 @@ def run_one_cycle(cycle_count):
     return True
 
 def main_loop():
+    global auction_synced_today
     cycle_count = 1
     print("🚀 往复式流水线调度中心已启动...")
     print(f"📍 监控脚本总数: {len(PIPELINE_QUEUE)}")
@@ -94,6 +100,18 @@ def main_loop():
     print("-" * 60)
 
     while True:
+        now = datetime.datetime.now()
+        current_date = now.date()
+        current_time_str = now.strftime("%H:%M")
+        
+        # --- 核心新增：09:26 竞价同步触发逻辑 ---
+        if now.weekday() <= 4: # 周一到周五
+            if current_time_str == "09:29" and auction_synced_today != current_date:
+                print(f"\n" + "🔔" * 5 + " 触发每日 09:26 竞价同步任务 " + "🔔" * 5)
+                subprocess.run([PYTHON_PATH, PATH_AUCTION], check=False)
+                auction_synced_today = current_date # 标记今天已运行
+                print("✅ 竞价任务执行完毕，继续等待 10:00 循环开启。")
+
         can_run, reason = is_within_running_window()
         
         if can_run:
