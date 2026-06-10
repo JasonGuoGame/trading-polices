@@ -22,20 +22,25 @@ PIPELINE_QUEUE = [
     r"c:\ws\trading-polices\Watchlist\STRATEGY_TREND_FOLLOWING.py",
     r"c:\ws\trading-polices\Watchlist\SYNC_MAIN_FORCE_TO_POOL.py",
     r"c:\ws\trading-polices\Watchlist\STRATEGY_RESEAL_REPAIR.py",
-    r"c:\ws\trading-polices\赚钱效应\MARKET_REGIME_JUDGE.py",
+    r"c:\ws\trading-polices\Watchlist\MARKET_REGIME_JUDGE.py",
     r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
     r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",
     r"c:\ws\trading-polices\Util\复盘\ANALYZE_STRATEGY_SCORE_DISTRIBUTION.py",
     r"C:\ws\trading-polices\Util\MARKET_SENTIMENT.py"
 ]
 
-# 1. 竞价同步脚本路径
+# 1. 竞价同步脚本路径 9：25执行一次
 PATH_AUCTION = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_AUCTION_CORE_LOGIC.py"
+PATH_AUCTION_TO_POOL = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_AUCTION_TO_POOL.py"
+
+# 盘前执行一次
+PATH_CALC_CHIP_DATABASE = r"C:\ws\trading-polices\Database\筹码\CALC_CHIP_DISTRIBUTION.py"
 
 PYTHON_PATH = sys.executable
 # ==========================================
 
 auction_synced_today = None 
+chip_synced_today = None
 
 def is_within_running_window():
     """判断当前时刻是否允许开始新的循环"""
@@ -49,7 +54,7 @@ def is_within_running_window():
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
     is_morning = ("09:50" <= current_time < "11:30")
-    is_afternoon = ("13:20" <= current_time < "15:18")
+    is_afternoon = ("13:10" <= current_time < "15:15")
     
     if is_morning:
         return True, "早盘运行中"
@@ -63,10 +68,24 @@ def run_one_cycle(cycle_count):
     now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"\n" + "🌀" * 5 + f" 启动第 {cycle_count} 轮循环 | 开始时间: {now_str} " + "🌀" * 5)
     print("=" * 80)
-
+    
     for i, script_path in enumerate(PIPELINE_QUEUE, 1):
         if not os.path.exists(script_path):
             print(f"❌ 找不到文件: {script_path}")
+            continue
+
+        now_time = datetime.datetime.now().time() # 获取当前纯时间
+
+        # 逻辑：如果路径中包含 "Watchlist" 字符串，且当前时间 >= 14:45
+        if "Watchlist" in script_path and now_time >= datetime.time(14, 45):
+            script_name = os.path.basename(script_path)
+            print(f"⏳ 跳过任务: {script_name} (原因: 14:45后不再更新股票池)")
+            continue
+
+         # 逻辑：如果路径中包含 "Watchlist" 字符串，且当前时间 >= 14:45
+        if "DB_ROLLING" in script_path and now_time >= datetime.time(10, 45):
+            script_name = os.path.basename(script_path)
+            print(f"⏳ 跳过任务: {script_name} (原因: 14:45后不再更新股票池)")
             continue
 
         script_name = os.path.basename(script_path)
@@ -93,6 +112,7 @@ def run_one_cycle(cycle_count):
 
 def main_loop():
     global auction_synced_today
+    global chip_synced_today
     cycle_count = 1
     print("🚀 往复式流水线调度中心已启动...")
     print(f"📍 监控脚本总数: {len(PIPELINE_QUEUE)}")
@@ -106,11 +126,21 @@ def main_loop():
         
         # --- 核心新增：09:26 竞价同步触发逻辑 ---
         if now.weekday() <= 4: # 周一到周五
-            if current_time_str == "09:29" and auction_synced_today != current_date:
+            if current_time_str == "09:26" and auction_synced_today != current_date:
                 print(f"\n" + "🔔" * 5 + " 触发每日 09:26 竞价同步任务 " + "🔔" * 5)
                 subprocess.run([PYTHON_PATH, PATH_AUCTION], check=False)
+                subprocess.run([PYTHON_PATH, PATH_AUCTION_TO_POOL], check=False)
+                # subprocess.run([PYTHON_PATH, PATH_CLEAN_DATABASE], check=False)
                 auction_synced_today = current_date # 标记今天已运行
                 print("✅ 竞价任务执行完毕，继续等待 10:00 循环开启。")
+        
+        # --- 核心新增：中午计算筹码峰因子 ---
+        if now.weekday() <= 4: # 周一到周五
+            if current_time_str > "11:30" and current_time_str < "12:30" and chip_synced_today != current_date:
+                print(f"\n" + "🔔" * 5 + " 触发每日 中午 筹码峰同步任务 " + "🔔" * 5)
+                subprocess.run([PYTHON_PATH, PATH_CALC_CHIP_DATABASE], check=False)
+                chip_synced_today = current_date # 标记今天已运行
+                print("✅ 筹码峰任务执行完毕。")
 
         can_run, reason = is_within_running_window()
         

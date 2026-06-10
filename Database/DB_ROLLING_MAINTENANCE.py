@@ -51,10 +51,10 @@ def run_all_maintenance():
         "stk_capital_abnormal"     # 资金异动明细
     ]
     for tbl in quant_tables:
-        clean_table_by_date_rank(engine_quant, "quant_db", tbl, keep_days=10)
+        clean_table_by_date_rank(engine_quant, "quant_db", tbl, keep_days=15)
 
     # B. 维护 trading_review 中的股票池表
-    clean_table_by_date_rank(engine_review, "trading_review", "stock_pools", keep_days=15)
+    clean_table_by_date_rank(engine_review, "trading_review", "stock_pools", keep_days=18)
 
     # B. 维护 strategy_performance_history 
     clean_table_by_date_rank(engine_review, "trading_review", "strategy_performance_history", keep_days=15)
@@ -65,7 +65,9 @@ def run_all_maintenance():
     # d. 维护 stk_auction_signal 
     clean_table_by_date_rank(engine_quant, "quant_db", "stk_auction_signal", keep_days=15)
 
-    print(f"\n[{datetime.datetime.now()}] 🎉 所有表已成功维持在最近 10 个交易日的容量！")
+    # f. 维护 quant_db.stk_chip_factor 
+    clean_table_by_date_rank(engine_quant, "quant_db", "stk_chip_factor", keep_days=30)
+    print(f"\n[{datetime.datetime.now()}] 🎉 所有表已成功维持在最近 15 个交易日的容量！")
 
 if __name__ == "__main__":
     run_all_maintenance()

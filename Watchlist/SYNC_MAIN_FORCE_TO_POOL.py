@@ -54,7 +54,7 @@ def save_to_stock_pool(df_results, trade_date):
             'status': '主力入场',
             'tags': json.dumps(tags_dict, ensure_ascii=False),
             'notes': f"主力成本:{row['主力成本']}, 现价偏离主力:{row['主力获利%']}%, 脉冲{row['异动次数']}次",
-            'is_watch_focus': is_focus,
+            'is_watch_focus': 0,
             'watch_level': watch_lvl,
             'created_at': now,
             'updated_at': now

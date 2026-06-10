@@ -141,7 +141,7 @@ def run_momentum_pipeline():
             with engine_review.begin() as conn:
                 # 步骤 A：物理删除今日此策略的所有旧记录 (去伪存真)
                 print(f"正在抹除数据库中 {today} 的旧短线信号...") #AND (status = '启动突破' OR status = '主升接力') AND pool_type = 'short'
-                conn.execute(text("DELETE FROM stock_pools WHERE trade_date = :d "), {"d": today})
+                conn.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status != '竞价异动'"), {"d": today})
                 
                 # 步骤 B：写入当前最新结果
                 # 去掉不属于数据库字段的临时列

@@ -50,6 +50,9 @@ def get_strategy_performance():
         if pt == 'short' and st == '资金共振金叉': return '3. 0轴金叉资金共振'
         if pt == 'long' and st == '趋势确立': return '4. MACD+BOLL趋势'
         if pt == 'short' and (st == '主升接力' or st == '启动突破'): return '5. 换手率+量比动能'
+        if pt == 'short' and st == '分歧反包': return '分歧反包'
+        if pt == 'short' and st == '主力入场': return '主力入场'
+        if pt == 'short' and st == '竞价异动': return '竞价异动'
         return '其他'
 
     df_signals['strategy_group'] = df_signals.apply(categorize_strategy, axis=1)
