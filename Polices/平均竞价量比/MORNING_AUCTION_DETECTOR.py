@@ -147,8 +147,8 @@ def get_auction_sentiment_with_mysql():
                 ratios.append(ratio)
                 
                 # 挖掘抢筹异动
-                # 条件：量比 > 5 且 价格 > 昨收
-                if ratio > 5.0 and tick.get('lastPrice', 0) > tick.get('lastClose', 0):
+                # 条件：量比 > 10 且 价格 > 昨收
+                if ratio > 10.0 and tick.get('lastPrice', 0) > tick.get('lastClose', 0):
                     # name_res = pd.read_sql(f"SELECT name FROM stocks WHERE symbol='{symbol}'", engine)
                     # name = name_res.iloc[0,0] if not name_res.empty else "未知"
                     # --- 修改 B: 直接从内存字典拿数据，不再查库 ---

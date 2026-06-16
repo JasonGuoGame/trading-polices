@@ -217,7 +217,7 @@ def run():
     # -------------------------
     df = df[
         (df["avg_ratio"] >= 3) &
-        (df["surge_count"] >= 2) &
+        # (df["surge_count"] >= 1) &
         (df["net_inflow_amount"] > 0) &
         (df["f_mom_20"] > 0.05)
     ]
@@ -230,7 +230,7 @@ def run():
     # score
     # -------------------------
     df["score"] = df.apply(calc_score, axis=1)
-
+    df = df.sort_values("score", ascending=False).drop_duplicates(subset=["symbol"], keep="first")
     df = df.sort_values("score", ascending=False).head(20)
 
     print(df[[

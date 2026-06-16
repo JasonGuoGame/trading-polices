@@ -45,8 +45,8 @@ def get_strategy_performance():
     def categorize_strategy(row):
         pt, st = row['pool_type'], str(row['status'])
         if st.startswith("赢家模式:"): return '6. 模式赢家跟随'
-        if pt == 'short' and st == '短线爆发黑马': return '1. 短线黑马股'
-        if pt == 'long' and st == '长线牛': return '2. 价值长线股'
+        if pt == 'short' and st == '四维共振': return '四维共振'
+        if pt == 'short' and st == 'GPT资金共振': return 'GPT资金共振'
         if pt == 'short' and st == '资金共振金叉': return '3. 0轴金叉资金共振'
         if pt == 'long' and st == '趋势确立': return '4. MACD+BOLL趋势'
         if pt == 'short' and (st == '主升接力' or st == '启动突破'): return '5. 换手率+量比动能'

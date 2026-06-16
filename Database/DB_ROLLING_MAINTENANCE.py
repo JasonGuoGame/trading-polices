@@ -54,7 +54,7 @@ def run_all_maintenance():
         clean_table_by_date_rank(engine_quant, "quant_db", tbl, keep_days=15)
 
     # B. 维护 trading_review 中的股票池表
-    clean_table_by_date_rank(engine_review, "trading_review", "stock_pools", keep_days=18)
+    clean_table_by_date_rank(engine_review, "trading_review", "stock_pools", keep_days=16)
 
     # B. 维护 strategy_performance_history 
     clean_table_by_date_rank(engine_review, "trading_review", "strategy_performance_history", keep_days=15)

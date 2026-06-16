@@ -7,6 +7,15 @@ DB_URL = 'mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db'
 engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review')
 engine = create_engine(DB_URL)
 
+# --- 定义需要排除的大盘指标股票（指数） ---
+INDEX_LIST = [
+    '000001.SH',  # 上证指数
+    '399001.SZ',  # 深证成指
+    '399006.SZ',  # 创业板指
+    '000300.SH',  # 沪深300
+    '000852.SH',  # 中证1000
+]
+
 def analyze_market_sentiment():
     print(f"[{datetime.datetime.now()}] 正在计算大盘全景数据...")
 
@@ -30,7 +39,10 @@ def analyze_market_sentiment():
     WHERE trade_date IN ('{today}', '{yesterday}')
     """
     df_all = pd.read_sql(query, engine)
-
+    
+    # 🌟 核心修改：过滤掉大盘指标股票（指数），只保留真实个股
+    df_all = df_all[~df_all['symbol'].isin(INDEX_LIST)]
+    
     # 3. 数据透视：把两天的数据并列，方便计算
     # 将 symbol 设为索引，trade_date 转为列
     df_pivot = df_all.pivot(index='symbol', columns='trade_date', values=['close', 'amount'])

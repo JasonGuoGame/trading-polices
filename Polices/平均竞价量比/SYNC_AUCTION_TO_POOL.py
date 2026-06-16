@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from xtquant import xtdata
 from sqlalchemy import create_engine, text
 import datetime
 import json
@@ -12,43 +11,19 @@ warnings.filterwarnings('ignore')
 
 # --- 1. 路径与配置加载 ---
 sys.path.append(r"C:\ws\trading-polices\config")
-import config  # 导入你的黑名单配置
+import config  # 导入你的全局黑名单配置
 
 # 数据库配置
 engine_quant = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db')
 engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review')
 
-# --- 2. 辅助函数 ---
-def get_clean_sectors(symbol, conn):
-    """为个股提取脱水后的双板块"""
-    query = text("""
-        SELECT GROUP_CONCAT(DISTINCT sector_name) 
-        FROM stock_sector_relation WHERE symbol = :s
-    """)
-    res = conn.execute(query, {"s": symbol}).fetchone()[0]
-    if not res: return "未分类"
-    
-    raw_list = res.split(',')
-    filtered = []
-    for s in raw_list:
-        if not any(noise in s for noise in config.SECTOR_BLACKLIST):
-            clean_s = s.replace('行业-', '').replace('概念-', '')
-            filtered.append(clean_s)
-    
-    if len(filtered) >= 2: return f"{filtered[0]} / {filtered[1]}"
-    elif len(filtered) == 1: return filtered[0]
-    return "综合题材"
+# --- 2. 核心辅助函数 ---
 
-def get_all_metadata(conn):
+def get_metadata(conn):
     """
-    一次性获取全市场名称和脱水后的板块映射
+    一次性获取全市场脱水后的板块映射，避免循环查询
     """
-    print("🔎 正在预加载板块映射...")
-    # 1. 获取名称
-    df_names = pd.read_sql("SELECT symbol, name FROM stocks", conn)
-    name_map = dict(zip(df_names['symbol'], df_names['name']))
-
-    # 2. 获取所有板块关系并手动脱水
+    print("🔎 正在预加载板块映射与黑名单过滤...")
     query_rel = text("""
         SELECT symbol, GROUP_CONCAT(DISTINCT sector_name) as all_sectors
         FROM stock_sector_relation
@@ -60,137 +35,134 @@ def get_all_metadata(conn):
     sector_map = {}
     for _, row in df_rel.iterrows():
         raw_list = row['all_sectors'].split(',')
-        # 应用黑名单过滤
-        filtered = [s.replace('行业-','').replace('概念-','') for s in raw_list 
-                    if not any(noise in s for noise in config.SECTOR_BLACKLIST)]
-        # 取前两个
-        sector_map[row['symbol']] = " / ".join(filtered[:2]) if filtered else "其他"
+        # 应用黑名单过滤逻辑
+        filtered = []
+        for s in raw_list:
+            if not any(noise in s for noise in config.SECTOR_BLACKLIST):
+                clean_s = s.replace('行业-', '').replace('概念-', '')
+                filtered.append(clean_s)
+        
+        # 提取前两个板块
+        if len(filtered) >= 2:
+            sector_map[row['symbol']] = f"{filtered[0]} / {filtered[1]}"
+        elif len(filtered) == 1:
+            sector_map[row['symbol']] = filtered[0]
+        else:
+            sector_map[row['symbol']] = "综合题材"
             
-    return name_map, sector_map
+    return sector_map
 
-def save_to_stock_pool(results_list, trade_date):
-    """将竞价结果同步至 trading_review.stock_pools"""
-    if not results_list: return
-    
-    now = datetime.datetime.now()
+def calculate_scientific_score(row):
+    """
+    科学评分逻辑：量比(60) + 涨幅(30) + 金额(10)
+    使用数据库中的 avg_ratio, open_pct, auction_amount
+    """
+    # 1. 量能分 (Max 60)
+    qr = float(row['avg_ratio'] or 0)
+    s_vol = np.clip((qr - 1) / 9 * 60, 0, 60) if qr >= 1 else 0
+
+    # 2. 价格分 (Max 30) - 黄金区间 2%-5%
+    pct = float(row['open_pct'] or 0)
+    if 2.0 <= pct <= 5.0: s_price = 30
+    elif 0 < pct < 2.0: s_price = (pct / 2.0) * 20
+    elif 5.0 < pct <= 7.0: s_price = 15
+    else: s_price = 0
+
+    # 3. 金额分 (Max 10) - 500万以上满分
+    amt = float(row['auction_amount'] or 0)
+    s_amt = np.clip(amt / 500 * 10, 0, 10)
+
+    return int(s_vol + s_price + s_amt)
+
+# --- 3. 主程序逻辑 ---
+
+def sync_auction_signals_to_pool():
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚀 启动竞价信号入库流程...")
+
+    with engine_quant.connect() as conn:
+        # A. 确定最新交易日
+        date_res = conn.execute(text("SELECT MAX(trade_date) FROM stk_auction_signal")).fetchone()
+        latest_date = date_res[0]
+        if not latest_date:
+            print("❌ 错误：stk_auction_signal 表为空，请先运行信号采集脚本。")
+            return
+        
+        print(f"📅 目标日期: {latest_date}")
+
+        # B. 预加载板块信息
+        sector_map = get_metadata(conn)
+
+        # C. 提取今日高量比信号 (量比 > 1.5)
+        query = text("""
+            SELECT symbol, name, avg_ratio, open_pct, auction_amount 
+            FROM stk_auction_signal 
+            WHERE trade_date = :d AND avg_ratio >= 1.5
+              AND name NOT LIKE '%%ST%%'
+              AND (symbol LIKE '60%%' OR symbol LIKE '00%%' OR symbol LIKE '30%%')
+        """)
+        df_signals = pd.read_sql(query, conn, params={"d": latest_date})
+
+    if df_signals.empty:
+        print("💡 今日无达标的竞价异动信号。")
+        return
+
+    # D. 处理数据并打分
     records = []
+    now = datetime.datetime.now()
     db_status = "竞价异动"
 
-    for item in results_list:
-        # 评分逻辑：量比 * 10，最高 100 分
-        score = int(np.clip(item['竞价量比'] * 10, 0, 100))
+    for _, row in df_signals.iterrows():
+        symbol = row['symbol']
+        score = calculate_scientific_score(row)
         
-        # 构造 JSON 标签
-        tags_dict = {
-            "strategy": "Auction_Surge",
-            "ratio": item['竞价量比'],
-            "open_pct": item['竞价涨幅%'],
-            "amount_wan": item['成交额(万)']
+        # 只要 60 分以上的
+        if score < 60: continue
+
+        tags = {
+            "strategy": "DB_Auction",
+            "ratio": float(row['avg_ratio']),
+            "open_pct": float(row['open_pct']),
+            "amt_wan": float(row['auction_amount'])
         }
 
         records.append({
-            'symbol': item['代码'],
-            'trade_date': trade_date,
-            'stock_name': item['名称'],
+            'symbol': symbol,
+            'trade_date': latest_date,
+            'stock_name': row['name'],
             'pool_type': 'short',
-            'sector_name': item['所属板块'],
+            'sector_name': sector_map.get(symbol, "未分类"),
             'score': score,
             'status': db_status,
-            'tags': json.dumps(tags_dict, ensure_ascii=False),
-            'notes': f"竞价量比达 {item['竞价量比']} 倍，属于早盘资金强力抢筹。",
-            'is_watch_focus': 1 if item['竞价量比'] > 10 else 0,
-            'watch_level': 2 if item['竞价量比'] > 8 else 1,
+            'tags': json.dumps(tags, ensure_ascii=False),
+            'notes': f"竞价量比{row['avg_ratio']}倍，成交{row['auction_amount']}万。量价共振强。",
+            'is_watch_focus': 1 if score >= 85 else 0,
+            'watch_level': 3 if score >= 85 else 1,
             'created_at': now,
             'updated_at': now
         })
 
-    df_save = pd.DataFrame(records)
-    try:
-        with engine_review.begin() as conn:
-            # 物理删除今日旧的“竞价异动”记录
-            conn.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status = :s"), 
-                         {"d": trade_date, "s": db_status})
-            # 批量写入
-            df_save.to_sql('stock_pools', con=conn, if_exists='append', index=False, chunksize=1000)
-        print(f"✅ 成功同步 {len(df_save)} 条竞价异动信号至股票池。")
-    except Exception as e:
-        print(f"❌ 数据库写入失败: {e}")
-
-def run_auction_pipeline():
-    print(f"[{datetime.datetime.now()}] 启动全自动竞价同步系统...")
-    
-    today = datetime.date.today()
-    
-    # 1. 提取历史基准 (V5)
-    history_sql = """
-    SELECT symbol, AVG(volume) as v5_avg
-    FROM (
-        SELECT symbol, volume,
-               ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_time DESC) as rn
-        FROM stk_min_kline
-        WHERE TIME(trade_time) = '09:30:00' AND DATE(trade_time) < CURDATE()
-    ) t
-    WHERE rn <= 5 GROUP BY symbol
-    """
-    with engine_quant.connect() as conn:
-        df_v5 = pd.read_sql(text(history_sql), conn)
-        df_names = pd.read_sql("SELECT symbol, name FROM stocks", conn)
-        name_map = dict(zip(df_names['symbol'], df_names['name']))
+    # E. 执行数据库写入 (UPSERT)
+    if records:
+        df_save = pd.DataFrame(records).sort_values('score', ascending=False)
         
-    if df_v5.empty:
-        print("❌ 错误：行情数据库中无分时历史。")
-        return
-
-    name_map, sector_map = get_all_metadata(conn)
-
-    v5_map = dict(zip(df_v5['symbol'], df_v5['v5_avg']))
-    target_stocks = list(v5_map.keys())
-
-    # 2. 获取实时竞价快照
-    xtdata.enable_hello = False
-    ticks = xtdata.get_full_tick(target_stocks)
-    if not ticks:
-        print("❌ 未能获取到 QMT 实时竞价数据。")
-        return
-
-    # 3. 计算并关联板块
-    all_results = []
-    with engine_quant.connect() as conn:
-        for symbol, tick in ticks.items():
-            base_v = v5_map.get(symbol, 0)
-            today_v = tick.get('volume', 0)
+        try:
+            with engine_review.begin() as conn_r:
+                # 物理删除今日旧的“竞价强异动”
+                conn_r.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status = :s"), 
+                             {"d": latest_date, "s": db_status})
+                # 写入
+                df_save.to_sql('stock_pools', con=conn_r, if_exists='append', index=False, chunksize=1000)
             
-            if base_v > 0 and today_v > 0:
-                ratio = round(today_v / base_v, 2)
-                if ratio > 80: ratio /= 100 # 单位修正
-                
-                # 筛选：量比 > 5 且 价格不低于昨收
-                if ratio >= 5.0 and tick.get('lastPrice', 0) >= tick.get('lastClose', 0):
-                    # 获取脱水后的双板块
-                    clean_sector = sector_map.get(symbol, "其他")
-                    
-                    all_results.append({
-                        '代码': symbol,
-                        '名称': name_map.get(symbol, '未知'),
-                        '所属板块': clean_sector,
-                        '竞价量比': ratio,
-                        '竞价涨幅%': round((tick['lastPrice']/tick['lastClose']-1)*100, 2) if tick.get('lastClose') else 0,
-                        '成交额(万)': round(tick['amount']/10000, 2)
-                    })
-
-    # 4. 执行报告与入库
-    if all_results:
-        # 控制台报告
-        df_report = pd.DataFrame(all_results).sort_values('竞价量比', ascending=False)
-        print("\n" + "🏮" * 10 + " 今日竞价抢筹名单 (量比 > 5) " + "🏮" * 10)
-        print("-" * 110)
-        print(df_report.head(20).to_string(index=False))
-        print("-" * 110)
-        
-        # 存入数据库
-        save_to_stock_pool(all_results, today)
+            # F. 输出报告
+            print("\n" + "🏁" * 10 + " 竞价选股入库清单 (Top 15) " + "🏁" * 10)
+            print("-" * 110)
+            print(df_save[['symbol', 'stock_name', 'sector_name', 'score', 'status']].head(15).to_string(index=False))
+            print("-" * 110)
+            print(f"✅ 成功将 {len(df_save)} 只标的同步至作战池。")
+        except Exception as e:
+            print(f"❌ 写入数据库失败: {e}")
     else:
-        print("今日未发现符合条件的竞价异动标的。")
+        print("💡 筛选完成，无高分标的入选。")
 
 if __name__ == "__main__":
-    run_auction_pipeline()
+    sync_auction_signals_to_pool()

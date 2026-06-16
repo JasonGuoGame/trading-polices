@@ -18,7 +18,8 @@ engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3
 
 def clean_and_pick_two_sectors(sector_str):
     """过滤黑名单并挑选前两个核心板块"""
-    if not sector_str: return "其他"
+    if sector_str is None or not isinstance(sector_str, str) or sector_str == "":
+        return "其他题材"
     raw_list = sector_str.split(',')
     filtered = [s.replace('行业-', '').replace('概念-', '') for s in raw_list if not any(noise in s for noise in config.SECTOR_BLACKLIST)]
     if len(filtered) >= 2: return f"{filtered[0]} / {filtered[1]}"

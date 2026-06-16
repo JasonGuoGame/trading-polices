@@ -8,21 +8,39 @@ import time
 # 脚本路径定义 (顺序执行全量工作流)
 PIPELINE_QUEUE = [
     r"C:\ws\trading-polices\Database\日线数据\DAILY_UPDATE_MYSQL.py",
+    # 更新 沪深300 等当日指数的数据到 daily kline
+    r"c:\ws\trading-polices\Database\日线数据\SYNC_INDEX_TODAY.py",
+    # 更新因子表 rsi macd boll
     r"C:\ws\trading-polices\Database\因子数据库\UPDATE_FACTORS_INCREMENTAL.py",
+    # 更新分时数据库 从这个表里寻找资金异动
     r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py",
+    # 计算个股资金流入情况
+    r"c:\ws\trading-polices\Database\个股资金\SYNC_STOCK_FUND_FLOW.PY",
+    # 找到 资金异动
     r"C:\ws\trading-polices\Polices\资金异动\CAPITAL_ABNORMAL_SCAN_DATABASE.py",
     # AKShare always encountered Remote end closed connection without response
+    # 更新同花顺资金流向
     r"c:\ws\trading-polices\AKShare\SYNC_THS_FLOW_TO_DB.py", 
+    # 新增20亿股票的攻击方向
     r"c:\ws\trading-polices\Util\复盘\SCREEN_NEW_20B_STOCKS.py",
     r"C:\ws\trading-polices\Polices\主线\FIND_THEME_LEADER_FINAL.py",
+    # 换手率和量比 确定启动阶段
     r"C:\ws\trading-polices\Watchlist\SYNC_MOMENTUM_STAGES.py",
+    # macd 水上金叉
     r"C:\ws\trading-polices\Watchlist\FIND_MACD_X_MONEY_FLOW.py",
-    # r"c:\ws\trading-polices\Polices\分歧转一致\DIVERGENCE_TO_CONSENSUS.py",
-    r"c:\ws\trading-polices\Watchlist\STOCK_ALPHA_SCORING.py",
+    # GPT 算法
+    r"c:\ws\trading-polices\Watchlist\STRATEGY_CAPITAL_RESONANCE.py",
+    # 短线和长线
+    r"c:\ws\trading-polices\Watchlist\QWEN_4D_STOCKS.py",
+    # macd + boll 中轨
     r"c:\ws\trading-polices\Watchlist\STRATEGY_TREND_FOLLOWING.py",
+    # 主力入场
     r"c:\ws\trading-polices\Watchlist\SYNC_MAIN_FORCE_TO_POOL.py",
+    # 分期反包策略
     r"c:\ws\trading-polices\Watchlist\STRATEGY_RESEAL_REPAIR.py",
+    # 赚钱效应 策略
     r"c:\ws\trading-polices\Watchlist\MARKET_REGIME_JUDGE.py",
+    # 数据库的维护
     r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
     r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",
     r"c:\ws\trading-polices\Util\复盘\ANALYZE_STRATEGY_SCORE_DISTRIBUTION.py",
@@ -31,9 +49,10 @@ PIPELINE_QUEUE = [
 
 # 1. 竞价同步脚本路径 9：25执行一次
 PATH_AUCTION = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_AUCTION_CORE_LOGIC.py"
+# 平均竞价超10倍股
 PATH_AUCTION_TO_POOL = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_AUCTION_TO_POOL.py"
 
-# 盘前执行一次
+# 盘中执行一次
 PATH_CALC_CHIP_DATABASE = r"C:\ws\trading-polices\Database\筹码\CALC_CHIP_DISTRIBUTION.py"
 
 PYTHON_PATH = sys.executable
@@ -54,7 +73,7 @@ def is_within_running_window():
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
     is_morning = ("09:50" <= current_time < "11:30")
-    is_afternoon = ("13:10" <= current_time < "15:15")
+    is_afternoon = ("13:00" <= current_time < "15:18")
     
     if is_morning:
         return True, "早盘运行中"
@@ -85,7 +104,7 @@ def run_one_cycle(cycle_count):
          # 逻辑：如果路径中包含 "Watchlist" 字符串，且当前时间 >= 14:45
         if "DB_ROLLING" in script_path and now_time >= datetime.time(10, 45):
             script_name = os.path.basename(script_path)
-            print(f"⏳ 跳过任务: {script_name} (原因: 14:45后不再更新股票池)")
+            print(f"⏳ 跳过任务: {script_name} (原因: 10:45后不再清理数据库,只开盘清理一次)")
             continue
 
         script_name = os.path.basename(script_path)
