@@ -23,7 +23,7 @@ PIPELINE_QUEUE = [
     r"c:\ws\trading-polices\AKShare\SYNC_THS_FLOW_TO_DB.py", 
     # 新增20亿股票的攻击方向
     r"c:\ws\trading-polices\Util\复盘\SCREEN_NEW_20B_STOCKS.py",
-    r"C:\ws\trading-polices\Polices\主线\FIND_THEME_LEADER_FINAL.py",
+    # r"C:\ws\trading-polices\Polices\主线\FIND_THEME_LEADER_FINAL.py",
     # 换手率和量比 确定启动阶段
     r"C:\ws\trading-polices\Watchlist\SYNC_MOMENTUM_STAGES.py",
     # macd 水上金叉
