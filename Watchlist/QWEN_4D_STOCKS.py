@@ -22,42 +22,88 @@ def calc_4d_score(row):
     """
     基于趋势、资金、板块、量价四维合力的 100 分制科学打分模型
     """
-    score = 0.0
-    
-    # 1. 板块维度 (最高 20 分)
-    # 🌟 修复：使用映射过来的板块最大净流入占比 (sector_max_inflow_rate)
-    sector_rate = row.get('sector_max_inflow_rate', 0)
-    score += min(sector_rate * 4, 20)
-    
-    # 2. 资金维度 (最高 30 分)
-    # 🌟 修复：使用查询出来的个股主力净流入占比 (main_net_ratio)
-    score += row.get('capital_score', 0) * 0.2  
-    main_ratio = row.get('main_net_ratio', 0)
-    score += min(main_ratio, 10) 
-    
-    # 3. 趋势维度 (最高 25 分)
-    score += min(row.get('f_mom_20', 0) * 100, 15)
-    dist_score = max(0, 10 - row.get('f_dist_high', 20))
-    score += dist_score
-    
-    # 4. 量价维度 (最高 25 分)
-    qr = row.get('f_quantity_ratio', 1.0)
-    if 1.5 <= qr <= 3.0:
-        score += 15
-    elif qr > 3.0:
-        score += max(0, 15 - (qr - 3.0) * 5) 
-    else:
-        score += (qr / 1.5) * 15             
-        
-    tr = row.get('turnover_rate', 0)
-    if 5.0 <= tr <= 15.0:
-        score += 10
-    elif tr > 15.0:
-        score += max(0, 10 - (tr - 15.0) * 0.5) 
-    else:
-        score += (tr / 5.0) * 10                
-        
-    return round(score, 2)
+    score = 0
+
+    # =====================
+    # 板块
+    # =====================
+
+    score += min(
+        row.get("sector_max_inflow_rate",0)*4,
+        20
+    )
+
+    # =====================
+    # 资金规模
+    # =====================
+
+    score += (
+        row.get("capital_score",0)
+        * 0.15
+    )
+
+    score += min(
+        row.get("main_net_ratio",0),
+        10
+    )
+
+    # =====================
+    # 资金攻击
+    # =====================
+
+    score += min(
+        row.get("buy_power_ratio",0)/100*15,
+        15
+    )
+
+    score += min(
+        row.get("attack_score",0)/100*15,
+        15
+    )
+
+    # =====================
+    # 趋势
+    # =====================
+
+    score += min(
+        row.get("f_mom_20",0)*100,
+        10
+    )
+
+    score += max(
+        0,
+        5-row.get("f_dist_high",10)
+    )
+
+    # =====================
+    # 筹码
+    # =====================
+
+    score += (
+        row.get("chip_score",0)
+        /100*10
+    )
+
+    # =====================
+    # 量价
+    # =====================
+
+    qr=row.get("f_quantity_ratio",1)
+
+    if 1.5<=qr<=3:
+        score+=10
+    elif qr>3:
+        score+=max(
+            0,
+            10-(qr-3)*3
+        )
+
+    tr=row.get("turnover_rate",0)
+
+    if 3<=tr<=15:
+        score+=5
+
+    return round(score,2)
 
 def save_to_stock_pool(df_selected, trade_date):
     if df_selected.empty:
@@ -74,6 +120,35 @@ def save_to_stock_pool(df_selected, trade_date):
             "profit_ratio": round(float(row["profit_ratio"]), 2),
             "quantity_ratio": round(float(row["f_quantity_ratio"]), 2),
             "main_net_ratio": round(float(row.get("main_net_ratio", 0)), 2),
+            "buy_power_ratio":
+                round(
+                    float(
+                        row.get(
+                            "buy_power_ratio",
+                            0
+                        )
+                    ),
+                    2
+                ),
+
+            "volume_power_ratio":
+                round(
+                    float(
+                        row.get(
+                            "volume_power_ratio",
+                            0
+                        )
+                    ),
+                    2
+                ),
+
+            "attack_score":
+                int(
+                    row.get(
+                        "attack_score",
+                        0
+                    )
+                ),
             "sector_rate": round(float(row.get("sector_max_inflow_rate", 0)), 2)
         }
         
@@ -209,7 +284,7 @@ def select_stocks_smart_match():
     df_kline = pd.read_sql(text(kline_sql), engine)
 
     # 🌟 核心修复：补充查询 main_net_ratio (个股主力净流入占比)
-    fund_sql = f"""SELECT symbol, main_net_inflow, main_net_ratio, inflow_3d, capital_score FROM stk_stock_fund_flow WHERE trade_date = '{today}' AND symbol IN ({symbols_str})"""
+    fund_sql = f"""SELECT symbol, main_net_inflow, main_net_ratio, inflow_3d, buy_power_ratio, sell_power_ratio, volume_power_ratio, attack_score, active_buy_amount, capital_score FROM stk_stock_fund_flow WHERE trade_date = '{today}' AND symbol IN ({symbols_str})"""
     df_fund = pd.read_sql(text(fund_sql), engine)
 
     chip_sql = f"""SELECT symbol, profit_ratio, chip_score FROM stk_chip_factor WHERE trade_date = '{today}' AND symbol IN ({symbols_str})"""
@@ -231,7 +306,27 @@ def select_stocks_smart_match():
     
     cond_trend = (df_all['f_mom_20'] > 0) & (df_all['f_macd_dif'] > df_all['f_macd_dea']) & (df_all['f_macd_hist'] > 0) & (df_all['close'] > df_all['f_bb_m'])
     # cond_fund = (df_all['main_net_inflow'] > 0) & (df_all['capital_score'] >= 70)
-    cond_fund = (df_all['main_net_inflow'] > 0) & (df_all['inflow_3d'] > 0) & (df_all['capital_score'] >= 70)
+    # cond_fund = (df_all['main_net_inflow'] > 0) & (df_all['inflow_3d'] > 0) & (df_all['capital_score'] >= 70)
+    cond_fund = (
+        (df_all['main_net_inflow'] > 0)
+
+        &
+
+        (df_all['inflow_3d'] > 0)
+
+        &
+
+        (df_all['capital_score'] >= 70)
+
+        &
+
+        (df_all['buy_power_ratio'] >= 55)
+
+        &
+
+        (df_all['volume_power_ratio'] >= 1.2)
+
+    )
     cond_chip = (df_all['profit_ratio'] > 60) & (df_all['chip_score'] > 60)
     
     # 🌟 核心修复：换手率阈值改回 3.0 和 15.0 (数据库存的是百分比数值，如 5.0 代表 5%)
@@ -241,8 +336,16 @@ def select_stocks_smart_match():
                      (df_all['f_quantity_ratio'] < 5.0) & \
                      (df_all['turnover_rate'] > 0.03) & \
                      (df_all['turnover_rate'] < 0.15)
+    cond_attack = (
 
-    df_selected = df_all[cond_fund & cond_trend & cond_chip & cond_vol_price].copy()
+        (df_all["attack_score"] >= 70)
+
+        &
+
+        (df_all["buy_power_ratio"] >= 60)
+
+    )
+    df_selected = df_all[cond_fund & cond_trend & cond_chip & cond_vol_price & cond_attack].copy()
 
     # ==========================================
     # 步骤 5：结果输出与入库

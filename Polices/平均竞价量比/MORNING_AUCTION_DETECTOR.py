@@ -2,104 +2,16 @@ import pandas as pd
 from xtquant import xtdata
 from sqlalchemy import create_engine, text
 import datetime
-import json
 import sys
 import numpy as np
 
-# --- 1. 路径与配置加载 ---
-sys.path.append(r"C:\ws\trading-polices\config")
-import config  # 导入你的黑名单配置
-
-# --- 1. 数据库配置 ---
+# --- 1. 数据库配置（仅用于读取历史基准量 V5） ---
 engine = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db')
-engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review')
 
-def get_all_metadata(conn):
-    """
-    一次性获取全市场名称和脱水后的板块映射
-    """
-    print("🔎 正在预加载板块映射...")
-    # 1. 获取名称
-    df_names = pd.read_sql("SELECT symbol, name FROM stocks", conn)
-    name_map = dict(zip(df_names['symbol'], df_names['name']))
+def get_auction_sentiment_report():
+    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🚀 正在生成全市场竞价热力报告...")
 
-    # 2. 获取所有板块关系并手动脱水
-    query_rel = text("""
-        SELECT symbol, GROUP_CONCAT(DISTINCT sector_name) as all_sectors
-        FROM stock_sector_relation
-        WHERE sector_name LIKE '行业-%%' OR sector_name LIKE '概念-%%'
-        GROUP BY symbol
-    """)
-    df_rel = pd.read_sql(query_rel, conn)
-    
-    sector_map = {}
-    for _, row in df_rel.iterrows():
-        raw_list = row['all_sectors'].split(',')
-        # 应用黑名单过滤
-        filtered = [s.replace('行业-','').replace('概念-','') for s in raw_list 
-                    if not any(noise in s for noise in config.SECTOR_BLACKLIST)]
-        # 取前两个
-        sector_map[row['symbol']] = " / ".join(filtered[:2]) if filtered else "其他"
-            
-    return name_map, sector_map
-
-def save_to_stock_pool(results_list, trade_date):
-    """将竞价结果同步至 trading_review.stock_pools"""
-    if not results_list: return
-    
-    now = datetime.datetime.now()
-    records = []
-    db_status = "竞价异动"
-
-    for item in results_list:
-        # 评分逻辑：量比 * 10，最高 100 分
-        score = int(np.clip(item['竞价量比'] * 10, 0, 100))
-        
-        # 构造 JSON 标签
-        tags_dict = {
-            "strategy": "Auction_Surge",
-            "ratio": item['竞价量比'],
-            "open_pct": item['竞价涨幅%'],
-            "amount_wan": item['竞价成交额(万)']
-        }
-
-        records.append({
-            'symbol': item['代码'],
-            'trade_date': trade_date,
-            'stock_name': item['名称'],
-            'pool_type': 'short',
-            'sector_name': item['所属板块'],
-            'score': score,
-            'status': db_status,
-            'tags': json.dumps(tags_dict, ensure_ascii=False),
-            'notes': f"竞价量比达 {item['竞价量比']} 倍，属于早盘资金强力抢筹。",
-            'is_watch_focus': 1 if item['竞价量比'] > 10 else 0,
-            'watch_level': 2 if item['竞价量比'] > 8 else 1,
-            'created_at': now,
-            'updated_at': now
-        })
-
-    df_save = pd.DataFrame(records)
-    try:
-        with engine_review.begin() as conn:
-            # 物理删除今日旧的“竞价异动”记录
-            conn.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status = :s"), 
-                         {"d": trade_date, "s": db_status})
-            # 批量写入
-            df_save.to_sql('stock_pools', con=conn, if_exists='append', index=False, chunksize=1000)
-        print(f"✅ 成功同步 {len(df_save)} 条竞价异动信号至股票池。")
-    except Exception as e:
-        print(f"❌ 数据库写入失败: {e}")
-
-def get_auction_sentiment_with_mysql():
-    print(f"[{datetime.datetime.now()}] 启动‘MySQL+QMT’联动竞价探测器...")
-
-    # 1. 从 MySQL 提取 5 日历史开盘均量 (V5)
-    # 逻辑：提取 trade_time 为 09:30:00 的所有记录，计算最近 5 天的平均值
-    print("正在从 MySQL 计算历史开盘基准量...")
-    
-    # 这里的 SQL 利用窗口函数取出每只股票最近 5 个交易日的开盘首分钟量
-    # 注意：TIME(trade_time) = '09:30:00' 对应竞价成交量
+    # 1. 从 MySQL 提取全市场 5 日历史开盘均量 (V5) 作为基准
     history_sql = """
     SELECT symbol, AVG(volume) as v5_avg
     FROM (
@@ -112,89 +24,100 @@ def get_auction_sentiment_with_mysql():
     GROUP BY symbol
     """
     
-    with engine.connect() as conn:
-        df_v5 = pd.read_sql(text(history_sql), conn)
-        name_map, sector_map = get_all_metadata(conn)
-
-    if df_v5.empty:
-        print("❌ 错误：MySQL 数据库中没有分时数据，请先同步 stk_min_kline。")
+    try:
+        with engine.connect() as conn:
+            df_v5 = pd.read_sql(text(history_sql), conn)
+    except Exception as e:
+        print(f"❌ 数据库读取失败: {e}")
         return
 
-    # 转为字典加速匹配
+    if df_v5.empty:
+        print("❌ 错误：MySQL 中没有足够的历史数据来计算 V5 基准量。")
+        return
+
     v5_map = dict(zip(df_v5['symbol'], df_v5['v5_avg']))
     target_stocks = list(v5_map.keys())
 
-    # 2. 从 QMT 获取今日实时竞价快照 (09:25:00 之后运行)
-    print(f"正在获取今日实时竞价数据（监控范围: {len(target_stocks)} 只）...")
+    # 2. 从 QMT 获取今日实时竞价快照 (请在 09:25:01 之后运行)
     xtdata.enable_hello = False
     ticks = xtdata.get_full_tick(target_stocks)
 
     if not ticks:
-        print("❌ 未能获取实时快照，请确保 QMT 行情灯为绿色。")
+        print("❌ 未能获取实时快照，请检查 QMT 行情连接状态。")
         return
 
-    # 3. 计算量比
-    results = []
-    ratios = []
+    # 3. 计算全市场统计指标
+    all_ratios = []
+    total_amount = 0
+    up_count = 0
+    down_count = 0
+    flat_count = 0
+    total_valid_stocks = 0
 
     for symbol, tick in ticks.items():
         if symbol in v5_map:
             today_v = tick.get('volume', 0)
             base_v = v5_map[symbol]
+            last_close = tick.get('lastClose', 0)
+            last_price = tick.get('lastPrice', 0)
             
-            if base_v > 0:
+            # 过滤掉停牌或无交易数据的股票
+            if base_v > 0 and last_close > 0 and today_v > 0:
                 ratio = today_v / base_v
-                ratios.append(ratio)
+                all_ratios.append(ratio)
                 
-                # 挖掘抢筹异动
-                # 条件：量比 > 10 且 价格 > 昨收
-                if ratio > 10.0 and tick.get('lastPrice', 0) > tick.get('lastClose', 0):
-                    # name_res = pd.read_sql(f"SELECT name FROM stocks WHERE symbol='{symbol}'", engine)
-                    # name = name_res.iloc[0,0] if not name_res.empty else "未知"
-                    # --- 修改 B: 直接从内存字典拿数据，不再查库 ---
-                    clean_sector = sector_map.get(symbol, "其他")
-                    stock_name = name_map.get(symbol, "未知")
+                total_amount += tick.get('amount', 0)
+                total_valid_stocks += 1
+                
+                # 计算涨跌分布
+                change_pct = (last_price / last_close - 1) * 100
+                if change_pct > 0.05: # 略微考虑滑点，0.05% 以上计入红盘
+                    up_count += 1
+                elif change_pct < -0.05:
+                    down_count += 1
+                else:
+                    flat_count += 1
 
-                    results.append({
-                        '代码': symbol,
-                        '名称': stock_name,
-                        '所属板块': clean_sector,
-                        '竞价量比': round(ratio, 2),
-                        '竞价涨幅%': round((tick['lastPrice']/tick['lastClose']-1)*100, 2) if tick.get('lastClose') else 0,
-                        '竞价成交额(万)': round(tick['amount']/10000, 2)
-                    })
+    # 4. 输出最终热力报告
+    if all_ratios:
+        market_avg_ratio = np.mean(all_ratios)
+        market_median_ratio = np.median(all_ratios)
+        total_amount_亿 = total_amount / 100000000
+        up_rate = (up_count / total_valid_stocks) * 100
 
-    # 4. 输出市场评估报告
-    if ratios:
-        market_avg = sum(ratios) / len(ratios)
-        print("\n" + "🏮" * 20)
-        print(f"📊 大盘竞价热力报告 ({datetime.datetime.now().strftime('%H:%M:%S')})")
-        print("-" * 45)
-        print(f"🔥 全市场平均竞价量比: {market_avg:.2f}")
+        print("\n" + "🏮" * 25)
+        print(f"📊 A股竞价热力报告 ({datetime.datetime.now().strftime('%H:%M:%S')})")
+        print("-" * 50)
         
-        # 情绪阈值
-        if market_avg > 1.25:
-            msg = "【沸腾】资金抢筹积极，做多情绪浓厚。"
-        elif market_avg > 0.85:
-            msg = "【平稳】多空相对均衡，跟随主线操作。"
+        # 指标 A: 活跃度
+        print(f"🔹 全市场平均竞价量比: {market_avg_ratio:.2f}")
+        print(f"🔹 全市场量比中位数:   {market_median_ratio:.2f}")
+        
+        # 指标 B: 资金参与度
+        print(f"🔹 竞价成交总金额:     {total_amount_亿:.2f} 亿元")
+        
+        # 指标 C: 涨跌强度
+        print(f"🔹 竞价红盘率:         {up_rate:.1f}%")
+        print(f"🔹 涨跌分布: 📈红盘({up_count}) | 📉绿盘({down_count}) | ⚪平盘({flat_count})")
+        
+        print("-" * 50)
+        
+        # 情绪综合评定逻辑
+        if market_avg_ratio > 1.3 and up_rate > 65 and total_amount_亿 > 40:
+            sentiment = "🔥 极度亢奋（资金疯狂抢筹）"
+        elif market_avg_ratio > 1.0 and up_rate > 50:
+            sentiment = "⭐ 情绪活跃（多头占优）"
+        elif market_avg_ratio < 0.8 and up_rate < 40:
+            sentiment = "❄️ 情绪低迷（资金观望为主）"
         else:
-            msg = "【低迷】资金入场意愿弱，防范回落风险。"
+            sentiment = "🌀 情绪平淡（多空均衡）"
             
-        print(f"🚩 盘面结论: {msg}")
-        print("-" * 45)
-        
-        if results:
-            today = datetime.date.today()
-            # 存入数据库
-            save_to_stock_pool(results, today)
-            
-            print("💡 竞价异动 Top 5（主力重金突击）:")
-            top_5 = sorted(results, key=lambda x: x['竞价量比'], reverse=True)[:5]
-            df_show = pd.DataFrame(top_5)
-            print(df_show.to_string(index=False))
-        print("🏮" * 20)
+        print(f"🚩 盘面结论: {sentiment}")
+        print("-" * 50)
+        print("💡 注：量比基于过去 5 日竞价成交量计算；成交总额反映全市场资金参与热度。")
+        print("🏮" * 25 + "\n")
     else:
-        print("未能计算出有效量比，请检查 QMT 实时连接。")
+        print("未能计算出有效量比数据，请确认当前处于交易时段或 QMT 数据已更新。")
 
 if __name__ == "__main__":
-    get_auction_sentiment_with_mysql()
+    get_auction_sentiment_report()

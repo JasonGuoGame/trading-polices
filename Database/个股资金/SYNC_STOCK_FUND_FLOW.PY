@@ -66,7 +66,9 @@ def calculate_stock_fund_flow():
     # 4. 分位数分类（向量化替代 apply）
     # =========================
     def calc_group(g):
+
         total_amt = g["amount_w"].sum()
+
         if total_amt <= 0:
             return pd.Series()
 
@@ -74,21 +76,90 @@ def calculate_stock_fund_flow():
         q80 = g["amount_w"].quantile(0.80)
         q50 = g["amount_w"].quantile(0.50)
 
-        super_large = g.loc[g["amount_w"] >= q95, "net_flow"].sum()
-        large = g.loc[(g["amount_w"] < q95) & (g["amount_w"] >= q80), "net_flow"].sum()
-        medium = g.loc[(g["amount_w"] < q80) & (g["amount_w"] >= q50), "net_flow"].sum()
-        small = g.loc[g["amount_w"] < q50, "net_flow"].sum()
+        super_large = g.loc[
+            g["amount_w"] >= q95,
+            "net_flow"
+        ].sum()
+
+        large = g.loc[
+            (g["amount_w"] < q95)
+            &
+            (g["amount_w"] >= q80),
+            "net_flow"
+        ].sum()
+
+        medium = g.loc[
+            (g["amount_w"] < q80)
+            &
+            (g["amount_w"] >= q50),
+            "net_flow"
+        ].sum()
+
+        small = g.loc[
+            g["amount_w"] < q50,
+            "net_flow"
+        ].sum()
 
         main = super_large + large
 
+        # =========================
+        # 主动买卖统计
+        # =========================
+
+        buy_amt = g.loc[
+            g["direction"] > 0,
+            "amount_w"
+        ].sum()
+
+        sell_amt = g.loc[
+            g["direction"] < 0,
+            "amount_w"
+        ].sum()
+
+        buy_power_ratio = (
+            buy_amt / total_amt * 100
+            if total_amt > 0 else 0
+        )
+
+        sell_power_ratio = (
+            sell_amt / total_amt * 100
+            if total_amt > 0 else 0
+        )
+
+        volume_power_ratio = (
+            buy_amt / sell_amt
+            if sell_amt > 0 else 99
+        )
+
         return pd.Series({
+
             "main_net_inflow": main,
+
             "super_large_net_inflow": super_large,
+
             "large_net_inflow": large,
+
             "medium_net_inflow": medium,
+
             "small_net_inflow": small,
-            "main_net_ratio": (main / total_amt * 100) if total_amt else 0,
-            "total_amount": total_amt
+
+            "main_net_ratio":
+                main / total_amt * 100,
+
+            "buy_power_ratio":
+                round(buy_power_ratio, 2),
+
+            "sell_power_ratio":
+                round(sell_power_ratio, 2),
+
+            "volume_power_ratio":
+                round(volume_power_ratio, 2),
+
+            "active_buy_amount":
+                round(buy_amt, 2),
+
+            "total_amount":
+                total_amt
         })
 
     df_daily = df.groupby("symbol").apply(calc_group).dropna().reset_index()
@@ -145,13 +216,72 @@ def calculate_stock_fund_flow():
     # =========================
     print("计算资金评分...")
 
+    score = (
+
+        df_daily["main_net_ratio"]
+            .rank(pct=True) * 25
+
+        +
+
+        df_daily["main_net_inflow"]
+            .rank(pct=True) * 20
+
+        +
+
+        df_daily["inflow_3d"]
+            .rank(pct=True) * 15
+
+        +
+
+        df_daily["inflow_5d"]
+            .rank(pct=True) * 10
+
+        +
+
+        df_daily["inflow_days"]
+            .rank(pct=True) * 10
+
+        +
+
+        np.clip(
+            df_daily["buy_power_ratio"]
+            / 60 * 10,
+            0,
+            10
+        )
+
+        +
+
+        np.clip(
+            df_daily["volume_power_ratio"]
+            / 2 * 10,
+            0,
+            10
+        )
+    )
+
     df_daily["capital_score"] = (
-        0.6 * df_daily["main_net_ratio"].rank(pct=True) +
-        0.4 * df_daily["main_net_inflow"].rank(pct=True)
-    ) * 100
+        score.round().astype(int)
+    )
 
     df_daily["capital_score"] = df_daily["capital_score"].fillna(0).astype(int)
+    
+    df_daily["attack_score"] = (
 
+        df_daily["buy_power_ratio"] * 0.4
+
+        +
+
+        np.minimum(
+            df_daily["volume_power_ratio"],
+            3
+        ) * 20
+
+        +
+
+        df_daily["main_net_ratio"] * 0.4
+
+    ).clip(0,100).astype(int)
     # 市场排名
     df_daily["rank_market"] = df_daily["main_net_inflow"] \
         .rank(ascending=False, method="min") \
@@ -189,6 +319,11 @@ def calculate_stock_fund_flow():
             main_net_ratio,
             inflow_3d, inflow_5d, inflow_10d, inflow_days,
             rank_market,
+            buy_power_ratio,
+            sell_power_ratio,
+            volume_power_ratio,
+            active_buy_amount,
+            attack_score,
             capital_score
         )
         VALUES (
@@ -201,6 +336,11 @@ def calculate_stock_fund_flow():
             :main_net_ratio,
             :inflow_3d, :inflow_5d, :inflow_10d, :inflow_days,
             :rank_market,
+            :buy_power_ratio,
+            :sell_power_ratio,
+            :volume_power_ratio,
+            :active_buy_amount,
+            :attack_score,
             :capital_score
         )
         ON DUPLICATE KEY UPDATE
@@ -215,6 +355,11 @@ def calculate_stock_fund_flow():
             inflow_10d = VALUES(inflow_10d),
             inflow_days = VALUES(inflow_days),
             rank_market = VALUES(rank_market),
+            buy_power_ratio = VALUES(buy_power_ratio),
+            sell_power_ratio = VALUES(sell_power_ratio),
+            volume_power_ratio = VALUES(volume_power_ratio),
+            active_buy_amount = VALUES(active_buy_amount),
+            attack_score = VALUES(attack_score),
             capital_score = VALUES(capital_score)
     """)
 

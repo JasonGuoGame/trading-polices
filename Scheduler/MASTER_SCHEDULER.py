@@ -52,6 +52,8 @@ PATH_AUCTION = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_AUCTION_C
 # 平均竞价超10倍股
 PATH_AUCTION_TO_POOL = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_AUCTION_TO_POOL.py"
 
+PATH_AUCTION_DETECTOR = r"C:\ws\trading-polices\Polices\平均竞价量比\MORNING_AUCTION_DETECTOR.py"
+
 # 盘中执行一次
 PATH_CALC_CHIP_DATABASE = r"C:\ws\trading-polices\Database\筹码\CALC_CHIP_DISTRIBUTION.py"
 
@@ -149,7 +151,7 @@ def main_loop():
                 print(f"\n" + "🔔" * 5 + " 触发每日 09:26 竞价同步任务 " + "🔔" * 5)
                 subprocess.run([PYTHON_PATH, PATH_AUCTION], check=False)
                 subprocess.run([PYTHON_PATH, PATH_AUCTION_TO_POOL], check=False)
-                # subprocess.run([PYTHON_PATH, PATH_CLEAN_DATABASE], check=False)
+                subprocess.run([PYTHON_PATH, PATH_AUCTION_DETECTOR], check=False)
                 auction_synced_today = current_date # 标记今天已运行
                 print("✅ 竞价任务执行完毕，继续等待 10:00 循环开启。")
         
