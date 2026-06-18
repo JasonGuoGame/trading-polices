@@ -16,6 +16,8 @@ PIPELINE_QUEUE = [
     r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py",
     # 计算个股资金流入情况
     r"c:\ws\trading-polices\Database\个股资金\SYNC_STOCK_FUND_FLOW.PY",
+    # 筹码数据 
+    r"C:\ws\trading-polices\Database\筹码\CALC_CHIP_DISTRIBUTION.py",
     # 找到 资金异动
     r"C:\ws\trading-polices\Polices\资金异动\CAPITAL_ABNORMAL_SCAN_DATABASE.py",
     # AKShare always encountered Remote end closed connection without response
@@ -55,7 +57,7 @@ PATH_AUCTION_TO_POOL = r"C:\ws\trading-polices\Polices\平均竞价量比\SYNC_A
 PATH_AUCTION_DETECTOR = r"C:\ws\trading-polices\Polices\平均竞价量比\MORNING_AUCTION_DETECTOR.py"
 
 # 盘中执行一次
-PATH_CALC_CHIP_DATABASE = r"C:\ws\trading-polices\Database\筹码\CALC_CHIP_DISTRIBUTION.py"
+# PATH_CALC_CHIP_DATABASE = r"C:\ws\trading-polices\Database\筹码\CALC_CHIP_DISTRIBUTION.py"
 
 PYTHON_PATH = sys.executable
 # ==========================================
@@ -156,12 +158,12 @@ def main_loop():
                 print("✅ 竞价任务执行完毕，继续等待 10:00 循环开启。")
         
         # --- 核心新增：中午计算筹码峰因子 ---
-        if now.weekday() <= 4: # 周一到周五
-            if current_time_str > "11:30" and current_time_str < "12:30" and chip_synced_today != current_date:
-                print(f"\n" + "🔔" * 5 + " 触发每日 中午 筹码峰同步任务 " + "🔔" * 5)
-                subprocess.run([PYTHON_PATH, PATH_CALC_CHIP_DATABASE], check=False)
-                chip_synced_today = current_date # 标记今天已运行
-                print("✅ 筹码峰任务执行完毕。")
+        # if now.weekday() <= 4: # 周一到周五
+        #     if current_time_str > "11:30" and current_time_str < "12:30" and chip_synced_today != current_date:
+        #         print(f"\n" + "🔔" * 5 + " 触发每日 中午 筹码峰同步任务 " + "🔔" * 5)
+        #         subprocess.run([PYTHON_PATH, PATH_CALC_CHIP_DATABASE], check=False)
+        #         chip_synced_today = current_date # 标记今天已运行
+        #         print("✅ 筹码峰任务执行完毕。")
 
         can_run, reason = is_within_running_window()
         
