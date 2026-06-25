@@ -74,11 +74,31 @@ def calc_chip(df):
 
         turnover = min(row["turnover_rate"] / 100, 0.99)
 
-        chips *= (1 - turnover)
+        attenuation = np.exp(-turnover * 1.5)
+        chips *= attenuation
 
         mask = (bins >= row["low"]) & (bins <= row["high"])
+
         if mask.sum() > 0:
-            chips[mask] += turnover / mask.sum()
+
+            mid_price = (
+                row["high"] + row["low"]
+            ) / 2
+
+            sigma = max(
+                (row["high"] - row["low"]) / 4,
+                0.01
+            )
+
+            weights = np.exp(
+                -((bins - mid_price) ** 2)
+                / (2 * sigma ** 2)
+            )
+
+            weights *= mask
+
+            if weights.sum() > 0:
+                chips += turnover * weights / weights.sum()
 
         # ✅ 20日筹码峰快照
         if i == len(df) - 21:
@@ -106,25 +126,42 @@ def calc_chip(df):
     c70_low, c70_high = get_range(0.7)
 
     chip_width = (c70_high - c70_low) / (c70_high + c70_low + 1e-6)
+    # =========================
+    # 主力成本
+    # =========================
+    cost = np.average(
+        bins,
+        weights=chips
+    )
+
+    cost_profit = (
+        current_price - cost
+    ) / (
+        cost + 1e-6
+    ) * 100
     peak_distance = (current_price - peak) / (peak + 1e-6)
+    
+    peak_move_pct = 0.0
+
+    if peak_20d_ago > 0:
+        peak_move_pct = (
+            peak - peak_20d_ago
+        ) / (peak_20d_ago + 1e-6)
 
     chip_score = 0
+
     if chip_width < 0.12:
         chip_score += 40
-    if profit_ratio > 85:
+
+    if (
+        profit_ratio > 80
+        and peak_move_pct > 0
+    ):
         chip_score += 40
+
     if abs(peak_distance) < 0.04:
         chip_score += 20
-
-    cost = (c70_low + c70_high) / 2
-    cost_profit = (current_price - cost) / (cost + 1e-6) * 100
-
-    # =========================
-    # peak_move_pct（核心修复）
-    # =========================
-    peak_move_pct = 0.0
-    if peak_20d_ago > 0:
-        peak_move_pct = (peak - peak_20d_ago) / (peak_20d_ago + 1e-6)
+ 
 
     return {
         "chip_peak_price": float(peak),
@@ -182,8 +219,8 @@ def detect_behavior(row):
     # =========================
     if (
         profit >= 75
-        and cost_profit > 3
-        and 0.01 < peak_move < 0.05
+        and cost_profit > 5
+        and peak_move > 0.01
     ):
         return 3
 
@@ -191,9 +228,11 @@ def detect_behavior(row):
     # 出货（真实机构行为）
     # =========================
     if (
-        profit > 85
-        and cost_profit > 10
-        and peak_move < 0.01
+        profit > 90
+        and (
+            peak_move < -0.02
+            or chip_width > 0.18
+        )
     ):
         return 4
 
@@ -277,10 +316,11 @@ def run():
     # 控盘评分
     # =========================
     df["main_force_control_score"] = (
-        df["chip_score"]
-        + df["capital_control_score"]
-        + (100 - df["chip_width70"] * 100).clip(0, 30)
-    ).clip(0, 100).astype(int)
+        df["chip_score"] * 0.5
+        + df["capital_control_score"] * 1.2
+        + (100 - df["chip_width70"] * 100) * 0.3
+        + np.minimum(df["profit_ratio"] / 2, 20)
+    ).clip(0,100).astype(int)
 
     df["control_level"] = pd.cut(
         df["main_force_control_score"],

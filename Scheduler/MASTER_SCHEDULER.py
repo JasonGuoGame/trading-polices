@@ -32,8 +32,10 @@ PIPELINE_QUEUE = [
     r"C:\ws\trading-polices\Watchlist\FIND_MACD_X_MONEY_FLOW.py",
     # GPT 算法
     r"c:\ws\trading-polices\Watchlist\STRATEGY_CAPITAL_RESONANCE.py",
-    # 短线和长线
+    # 资金流入板块 四维共振
     r"c:\ws\trading-polices\Watchlist\QWEN_4D_STOCKS.py",
+    # 100% 获胜板块 四维共振
+    r"c:\ws\trading-polices\Watchlist\SECTOR_100_4D_STOCKS.py",
     # macd + boll 中轨
     r"c:\ws\trading-polices\Watchlist\STRATEGY_TREND_FOLLOWING.py",
     # 主力入场

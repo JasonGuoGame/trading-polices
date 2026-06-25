@@ -9,7 +9,7 @@ DB_URL = 'mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db'
 engine = create_engine(DB_URL)
 
 PERIOD = '1m'
-KEEP_DAYS = 8       # 数据库保留最近30天数据
+KEEP_DAYS = 10       # 数据库保留最近30天数据
 BATCH_SIZE = 200     # 增量模式下，每批可以处理更多只股票
 # --------------
 
