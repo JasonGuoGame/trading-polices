@@ -1,0 +1,162 @@
+import pandas as pd
+from sqlalchemy import create_engine, text
+import datetime
+import numpy as np
+
+# --- 数据库配置 ---
+engine_quant = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db')
+engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review')
+
+def get_limit_threshold(symbol):
+    if symbol.startswith(('30', '68')): return 19.8
+    return 9.8
+
+def calculate_sector_scores_v3():
+    # 1. 自动获取最近的三个交易日
+    with engine_quant.connect() as conn:
+        res = conn.execute(text("SELECT DISTINCT trade_date FROM stk_daily_kline ORDER BY trade_date DESC LIMIT 3")).fetchall()
+        if len(res) < 3:
+            print("❌ 历史数据不足（需至少3个交易日）。")
+            return
+        today, yesterday, day_before_yesterday = res[0][0], res[1][0], res[2][0]
+
+    print(f"🚀 开始计算板块评分 | 目标日期: {today}")
+
+    # ---------------------------------------------------------
+    # 步骤 A: 获取【标准板块名单】及资金数据 (30分)
+    # ---------------------------------------------------------
+    # 🌟 修改点：这里成为了“数据源头”，只有在这个表里出现的板块，才会参与后续评分
+    flow_sql = f"SELECT sector_name, net_inflow_amount, net_inflow_rate FROM stk_sector_fund_flow WHERE trade_date = '{today}'"
+    df_flow = pd.read_sql(flow_sql, engine_quant).set_index('sector_name')
+    
+    # 获取需要计算的官方板块名单
+    official_sector_list = df_flow.index.tolist()
+    print(f"统计范围：已锁定资金流表中的 {len(official_sector_list)} 个板块。")
+
+    # ---------------------------------------------------------
+    # 步骤 B: 赚钱效应与龙头强度 (25+20分)
+    # ---------------------------------------------------------
+    # SQL 逻辑：提取所有个股及其所属板块，不再限定“行业-”前缀
+    kline_sql = text("""
+        SELECT 
+            t.symbol, t.close, t.high, t.amount,
+            y.close AS prev_close,
+            r.sector_name AS raw_db_sector_name
+        FROM stk_daily_kline t
+        JOIN stk_daily_kline y ON t.symbol = y.symbol AND y.trade_date = :y_date
+        JOIN stock_sector_relation r ON t.symbol = r.symbol
+        WHERE t.trade_date = :t_date
+    """)
+    
+    with engine_quant.connect() as conn:
+        df_k_raw = pd.read_sql(kline_sql, conn, params={"t_date": today, "y_date": yesterday})
+
+    # 🌟 核心修正：名称对齐逻辑
+    # 我们需要把数据库里的 "行业-证券Ⅱ" 映射到 资金流表里的 "证券"
+    def map_to_official(db_name):
+        clean_name = db_name.replace('行业-', '').replace('概念-', '').replace('Ⅱ', '').replace('Ⅲ', '').strip()
+        # 只有在官方名单里的才保留，否则返回 None
+        if clean_name in official_sector_list:
+            return clean_name
+        # 尝试模糊匹配（处理有些名字不完全一致的情况）
+        for off_name in official_sector_list:
+            if off_name in clean_name:
+                return off_name
+        return None
+
+    df_k_raw['official_name'] = df_k_raw['raw_db_sector_name'].apply(map_to_official)
+    # 过滤掉不在名单内的板块
+    df_k = df_k_raw.dropna(subset=['official_name']).copy()
+    df_k['chg_pct'] = (df_k['close'] / df_k['prev_close'] - 1) * 100
+    
+    # 标记涨停/触板
+    df_k['is_limit'] = df_k.apply(lambda r: r['close'] >= round(r['prev_close']*(1+get_limit_threshold(r['symbol'])/100), 2), axis=1)
+    df_k['hit_limit'] = df_k.apply(lambda r: r['high'] >= round(r['prev_close']*(1+get_limit_threshold(r['symbol'])/100), 2), axis=1)
+
+    # ---------------------------------------------------------
+    # 步骤 C: 攻击力度 (15分)
+    # ---------------------------------------------------------
+    attack_sql = f"SELECT symbol FROM stk_market_attack_log WHERE trade_date = '{today}'"
+    attack_symbols = pd.read_sql(attack_sql, engine_quant)['symbol'].unique()
+
+    # ---------------------------------------------------------
+    # 步骤 D: 持续性 (10分) - 来自昨日评分排名
+    # ---------------------------------------------------------
+    prev_cont_sql = f"SELECT sector_name, rank_pos FROM stk_sector_scores WHERE trade_date = '{yesterday}'"
+    df_prev_scores = pd.read_sql(prev_cont_sql, engine_review).set_index('sector_name')
+
+    # --- 聚合逻辑 ---
+    results = []
+    # 🌟 修改点：只遍历资金流表里存在的板块
+    for name in official_sector_list:
+        group = df_k[df_k['official_name'] == name]
+        if group.empty: continue
+        
+        # 1. 资金分 (30) - 直接从 df_flow 拿
+        f = df_flow.loc[name]
+        m_score = 0
+        m_score += min(max(float(f['net_inflow_amount'])/1e8 * 1.5, 0), 15)
+        m_score += min(max(float(f['net_inflow_rate']) * 2, 0), 10)
+        m_score += 5 if float(f['net_inflow_amount']) > 0 else 0
+
+        # 2. 赚钱效应分 (25)
+        up_rate = (group['chg_pct'] > 0).sum() / len(group)
+        limit_count = group['is_limit'].sum()
+        hit_count = group['hit_limit'].sum()
+        broken_rate = (hit_count - limit_count) / hit_count if hit_count > 0 else 0
+        profit_s = (up_rate * 10) + min(limit_count * 2, 10) + max(5 * (1 - broken_rate), 0)
+
+        # 3. 龙头强度 (20)
+        # 这里去重，防止个股因为数据库有 证券Ⅱ/证券Ⅲ 两个标签而被重复计算龙头
+        unique_group = group.drop_duplicates(subset=['symbol'])
+        leaders = unique_group.sort_values('amount', ascending=False).head(3)
+        l_avg_chg = leaders['chg_pct'].mean()
+        if l_avg_chg > 2 and l_avg_chg > unique_group['chg_pct'].mean():
+            leader_s = 20
+        elif l_avg_chg < 0:
+            leader_s = 5
+        else:
+            leader_s = 12
+
+        # 4. 攻击力度 (15)
+        attack_count = unique_group['symbol'].isin(attack_symbols).sum()
+        attack_s = min(attack_count * 1.5, 15)
+
+        # 5. 持续性 (10)
+        cont_s = 5
+        if name in df_prev_scores.index:
+            p_rank = df_prev_scores.loc[name, 'rank_pos']
+            if p_rank == 1: cont_s = 10
+            elif p_rank <= 3: cont_s = 8
+            else: cont_s = 6
+
+        total = m_score + profit_s + leader_s + attack_s + cont_s
+        
+        results.append({
+            'trade_date': today, 'sector_name': name,
+            'money_score': m_score, 'profit_score': profit_s,
+            'leader_score': leader_s, 'attack_score': attack_s,
+            'continuity_score': cont_s, 'total_score': total
+        })
+
+    # --- 排序并保存 ---
+    df_res = pd.DataFrame(results).sort_values('total_score', ascending=False)
+    df_res['rank_pos'] = range(1, len(df_res) + 1)
+
+    with engine_review.begin() as conn:
+        for _, row in df_res.iterrows():
+            conn.execute(text("""
+                INSERT INTO stk_sector_scores 
+                (trade_date, sector_name, money_score, profit_score, leader_score, attack_score, continuity_score, total_score, rank_pos)
+                VALUES (:trade_date, :sector_name, :money_score, :profit_score, :leader_score, :attack_score, :continuity_score, :total_score, :rank_pos)
+                ON DUPLICATE KEY UPDATE 
+                    money_score=VALUES(money_score), profit_score=VALUES(profit_score),
+                    leader_score=VALUES(leader_score), attack_score=VALUES(attack_score),
+                    continuity_score=VALUES(continuity_score), total_score=VALUES(total_score), 
+                    rank_pos=VALUES(rank_pos)
+            """), row.to_dict())
+
+    print(f"✅ 统一评分完成！今日前三: {', '.join(df_res['sector_name'].head(3).tolist())}")
+
+if __name__ == "__main__":
+    calculate_sector_scores_v3()

@@ -1,14 +1,10 @@
 import sys
 import os
-# 彻底屏蔽代理干扰
 os.environ['http_proxy'] = ''
 os.environ['https_proxy'] = ''
-os.environ['all_proxy'] = ''
-os.environ['no_proxy'] = '*'
 
 import akshare as ak
 import pandas as pd
-import numpy as np
 from sqlalchemy import create_engine, text
 import datetime
 import warnings
@@ -23,117 +19,124 @@ import config  # 导入你的全局配置文件
 # --- 1. 数据库配置 ---
 engine = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db')
 
-def sync_ths_flow_all_sectors():
-    print(f"[{datetime.datetime.now()}] 启动同花顺题材全量资金流向（流入+流出）监控...")
+def sync_sector_flow_from_stock_table():
+    print(f"[{datetime.datetime.now()}] 🚀 启动基于‘个股真实资金流’的板块聚合系统...")
 
     try:
-        # 1. 获取同花顺官方概念名单
-        df_ths_list = ak.stock_board_concept_name_ths()
-        name_col = next((c for c in df_ths_list.columns if c.lower() == 'name' or '名称' in c), None)
-        ths_official_names = set(df_ths_list[name_col].tolist())
-
-        noise_filter = " AND ".join([f"r.sector_name NOT LIKE '%%{k}%%'" for k in config.SECTOR_BLACKLIST])
-
-        # 3. 日期获取
-        with engine.connect() as conn:
-            date_res = conn.execute(text("SELECT MAX(trade_date) FROM stk_daily_kline")).fetchone()
-            today = date_res[0]
-            yest_res = conn.execute(text("SELECT DISTINCT trade_date FROM stk_daily_kline WHERE trade_date < :t ORDER BY trade_date DESC LIMIT 1"), {"t": today}).fetchone()
-            yesterday = yest_res[0]
+        # --- A. 获取同花顺官方标准名单（行业+概念） ---
+        df_ths_ind = ak.stock_board_industry_name_ths() 
+        df_ths_con = ak.stock_board_concept_name_ths()  
+        # 1. 合并所有原始名称
+        raw_official_names = set(df_ths_ind['name'].tolist()) | set(df_ths_con['name'].tolist())
         
-        print(f"📅 分析日期: {today} | 对比日期: {yesterday}")
+        # 2. 🌟 核心过滤：应用 config.SECTOR_BLACKLIST 过滤无意义板块
+        # 逻辑：只有当板块名不包含黑名单中任何一个关键词时，才保留
+        official_names = {
+            name for name in raw_official_names 
+            if not any(noise in name for noise in config.SECTOR_BLACKLIST)
+        }
 
-        # 4. 执行 SQL：提取个股行情
-        query = text(f"""
+        # 3. 构建过滤后的代码映射表
+        # 先合并所有代码
+        all_name_to_code = dict(zip(df_ths_ind['name'], df_ths_ind['code']))
+        all_name_to_code.update(dict(zip(df_ths_con['name'], df_ths_con['code'])))
+        
+        # 只保留在 official_names 中的键值对
+        name_to_code = {k: v for k, v in all_name_to_code.items() if k in official_names}
+
+        print(f"✅ 名单脱水完成：原始 {len(raw_official_names)} 个，过滤后剩余 {len(official_names)} 个核心板块。")
+
+        # --- B. 获取日期 ---
+        with engine.connect() as conn:
+            date_res = conn.execute(text("SELECT MAX(trade_date) FROM stk_stock_fund_flow")).fetchone()
+            today = date_res[0]
+        print(f"📅 分析日期: {today}")
+
+        # --- C. SQL：关联‘个股资金流’、‘板块映射’、‘K线’ ---
+        # 我们需要 K 线的 amount 来计算流入占比
+        query = text("""
             SELECT 
-                r.sector_name as 'raw_sector',
-                s.name as 'stock_name',
-                k.symbol, k.close as 'close_t', k_y.close as 'close_y', k.amount as 'amount_raw'
-            FROM stk_daily_kline k
-            JOIN stocks s ON k.symbol = s.symbol
-            JOIN stock_sector_relation r ON k.symbol = r.symbol
-            JOIN stk_daily_kline k_y ON k.symbol = k_y.symbol AND k_y.trade_date = :yest
-            WHERE k.trade_date = :today
-              AND r.sector_name LIKE '概念-%%'
-              AND ({noise_filter})
+                f.symbol, 
+                f.stock_name,
+                f.main_net_inflow,      -- 真实主力净流入(万元)
+                f.active_buy_amount,    -- 真实主动买入(万元)
+                f.capital_score,        -- 个股资金分
+                f.attack_score,         -- 个股攻击分
+                r.sector_name as db_sector_name,
+                k.amount as stock_turnover_amount,
+                (k.close/k.open - 1)*100 as p_chg  -- 算涨跌幅用于选出板块龙头
+            FROM stk_stock_fund_flow f
+            JOIN stock_sector_relation r ON f.symbol = r.symbol
+            JOIN stk_daily_kline k ON f.symbol = k.symbol AND f.trade_date = k.trade_date
+            WHERE f.trade_date = :today
         """)
         
         with engine.connect() as conn:
-            df_raw = pd.read_sql(query, conn, params={"today": today, "yest": yesterday})
+            df_raw = pd.read_sql(query, conn, params={"today": today})
 
         if df_raw.empty:
-            print("❌ 未提取到行情数据。")
+            print("❌ 未提取到个股资金流数据，请确认 stk_stock_fund_flow 已同步。")
             return
 
-        # 5. 核心计算：主力净流入模拟 (保留正负号)
-        df_raw['pct_chg'] = (df_raw['close_t'] - df_raw['close_y']) / df_raw['close_y']
-        # 净流入 = 成交额 * 涨跌幅 * 0.5 (正数为流入，负数为流出)
-        df_raw['net_flow_sim'] = df_raw['amount_raw'] * df_raw['pct_chg'] * 0.5
+        # --- D. 名称对齐函数 ---
+        def align_to_official(raw_name):
+            name = raw_name.replace('行业-', '').replace('概念-', '').replace('Ⅱ', '').replace('Ⅲ', '').strip()
+            if name in official_names: return name
+            for off_n in official_names:
+                if off_n in name: return off_n
+            return None
 
-        # 6. 按板块聚合
+        df_raw['official_name'] = df_raw['db_sector_name'].apply(align_to_official)
+        df_raw = df_raw.dropna(subset=['official_name'])
+
+        # --- E. 按板块聚合（含去重逻辑） ---
         results_list = []
-        for sector_name, group in df_raw.groupby('raw_sector'):
-            clean_name = sector_name.replace('概念-', '')
-            if clean_name not in ths_official_names or len(group) < 6:
-                continue
+        for official_name, group in df_raw.groupby('official_name'):
+            # 🌟 关键：去重！解决一个股票属于 CSSW证券/SW2证券 等多个标签的问题
+            unique_stocks = group.drop_duplicates(subset=['symbol'])
+            
+            if len(unique_stocks) < 4: continue 
 
-            sum_inflow = group['net_flow_sim'].sum()
-            sum_total_amount = group['amount_raw'].sum()
+            # 计算各项指标
+            sum_main_inflow = unique_stocks['main_net_inflow'].sum() # 万元
+            sum_turnover = unique_stocks['stock_turnover_amount'].sum() # 元
+            avg_cap_score = unique_stocks['capital_score'].mean()
+            avg_atk_score = unique_stocks['attack_score'].mean()
             
-            # 计算指标
-            net_inflow_amount = round(sum_inflow / 1e8, 2) # 亿
-            net_inflow_rate = round((sum_inflow / sum_total_amount * 100), 2) if sum_total_amount > 0 else 0
+            # 计算流入占比
+            # 注意：sum_main_inflow 是万元，sum_turnover 是元
+            inflow_rate = (sum_main_inflow * 10000 / sum_turnover * 100) if sum_turnover > 0 else 0
             
-            # 领涨/领跌龙头 (涨幅绝对值最大的)
-            top_stock = group.sort_values(by='pct_chg', ascending=False).iloc[0]['stock_name']
+            # 寻找板块领涨龙头
+            top_stock = unique_stocks.sort_values(by='p_chg', ascending=False).iloc[0]['stock_name']
 
             results_list.append({
-                'sector_name': clean_name,
+                'sector_name': official_name,
+                'sector_code': name_to_code.get(official_name, ''),
                 'trade_date': today,
-                'net_inflow_amount': net_inflow_amount,
-                'net_inflow_rate': net_inflow_rate,
+                'net_inflow_amount': round(sum_main_inflow / 10000, 2), # 转为 亿元
+                'net_inflow_rate': round(inflow_rate, 2),
+                'avg_capital_score': round(avg_cap_score, 2),
+                'avg_attack_score': round(avg_atk_score, 2),
                 'top_stock_name': top_stock
             })
 
-        if not results_list:
-            print("未能生成任何有效数据。")
-            return
-
         df_final = pd.DataFrame(results_list)
 
-        # 7. 写入数据库 (替换模式)
+        # --- F. 写入数据库 ---
+        # 建议在 stk_sector_fund_flow 表中增加 avg_capital_score 等字段
         with engine.begin() as conn:
             conn.execute(text("DELETE FROM stk_sector_fund_flow WHERE trade_date = :d"), {"d": today})
             df_final.to_sql('stk_sector_fund_flow', con=conn, if_exists='append', index=False)
 
-            # B. 核心修改：库容维护逻辑，只保留最近 5 个交易日
-            # 首先找出当前数据库中最新的 5 个日期
-            date_list_sql = text("SELECT DISTINCT trade_date FROM stk_sector_fund_flow ORDER BY trade_date DESC LIMIT 5")
-            top_5_dates = [r[0] for r in conn.execute(date_list_sql).fetchall()]
-            
-            if len(top_5_dates) >= 5:
-                oldest_date = top_5_dates[-1] # 第 5 名的日期
-                # 删除所有比第 5 名还旧的日期
-                del_res = conn.execute(text("DELETE FROM stk_sector_fund_flow WHERE trade_date < :d"), {"d": oldest_date})
-                if del_res.rowcount > 0:
-                    print(f"🧹 库容维护：已清理早于 {oldest_date} 的老旧数据，移除 {del_res.rowcount} 条记录。")
-                    
-        # 8. 分类打印报告 (流入榜 vs 流出榜)
-        inflow_top = df_final[df_final['net_inflow_amount'] > 0].sort_values('net_inflow_amount', ascending=False).head(10)
-        outflow_top = df_final[df_final['net_inflow_amount'] < 0].sort_values('net_inflow_amount', ascending=True).head(10)
-
-        print("\n" + "💰" * 8 + f" {today} 题材【净流入】前 10 名 " + "💰" * 8)
-        print("-" * 85)
-        print(inflow_top.to_string(index=False))
-
-        print("\n" + "💸" * 8 + f" {today} 题材【净流出】前 10 名 " + "💸" * 8)
-        print("-" * 85)
-        print(outflow_top.to_string(index=False))
-
-        print(f"\n✅ 同步完成！数据库已更新 {len(df_final)} 个题材的完整资金动向。")
+        # --- G. 打印深度复盘报告 ---
+        print("\n" + "💰" * 10 + f" {today} 板块资金流深度报告 " + "💰" * 10)
+        report = df_final.sort_values('net_inflow_amount', ascending=False).head(15)
+        # 只打印核心列
+        print(report[['sector_name', 'net_inflow_amount', 'net_inflow_rate', 'avg_attack_score', 'top_stock_name']].to_string(index=False))
 
     except Exception as e:
         print(f"❌ 运行失败: {e}")
 
 if __name__ == "__main__":
-    sync_ths_flow_all_sectors()
+    sync_sector_flow_from_stock_table()

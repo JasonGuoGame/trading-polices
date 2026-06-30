@@ -14,6 +14,10 @@ PIPELINE_QUEUE = [
     r"C:\ws\trading-polices\Database\因子数据库\UPDATE_FACTORS_INCREMENTAL.py",
     # 更新分时数据库 从这个表里寻找资金异动
     r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py",
+    # 大盘的情绪分析
+    r"C:\ws\trading-polices\Util\MARKET_SENTIMENT.py",
+    # 大盘的情绪分析
+    r"C:\ws\trading-polices\Util\sync_sector_breadths.py",
     # 计算个股资金流入情况
     r"c:\ws\trading-polices\Database\个股资金\SYNC_STOCK_FUND_FLOW.PY",
     # 筹码数据 
@@ -27,6 +31,8 @@ PIPELINE_QUEUE = [
     r"c:\ws\trading-polices\Util\复盘\SCREEN_NEW_20B_STOCKS.py",
     # r"C:\ws\trading-polices\Polices\主线\FIND_THEME_LEADER_FINAL.py",
     # 换手率和量比 确定启动阶段
+    # 大盘的情绪分析
+    r"C:\ws\trading-polices\Util\calculate_sector_scores.py",
     r"C:\ws\trading-polices\Watchlist\SYNC_MOMENTUM_STAGES.py",
     # macd 水上金叉
     r"C:\ws\trading-polices\Watchlist\FIND_MACD_X_MONEY_FLOW.py",
@@ -48,7 +54,6 @@ PIPELINE_QUEUE = [
     r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
     r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",
     r"c:\ws\trading-polices\Util\复盘\ANALYZE_STRATEGY_SCORE_DISTRIBUTION.py",
-    r"C:\ws\trading-polices\Util\MARKET_SENTIMENT.py"
 ]
 
 # 1. 竞价同步脚本路径 9：25执行一次
@@ -79,7 +84,7 @@ def is_within_running_window():
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
     is_morning = ("09:50" <= current_time < "11:30")
-    is_afternoon = ("13:00" <= current_time < "15:18")
+    is_afternoon = ("13:00" <= current_time < "15:20")
     
     if is_morning:
         return True, "早盘运行中"
