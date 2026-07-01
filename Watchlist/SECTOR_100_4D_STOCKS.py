@@ -191,9 +191,13 @@ def select_stocks_smart_match():
     cond_trend = (df_all['f_mom_20'] > 0) & (df_all['f_macd_dif'] > df_all['f_macd_dea']) & (df_all['f_macd_hist'] > 0) & (df_all['close'] > df_all['f_bb_m'])
     cond_fund = (df_all['main_net_inflow'] > 0) & (df_all['inflow_3d'] > 0) & (df_all['capital_score'] >= 70) & (df_all['buy_power_ratio'] >= 55) & (df_all['volume_power_ratio'] >= 1.1)
     cond_chip = (df_all['profit_ratio'] > 60) & (df_all['chip_score'] > 60)
-    cond_vol_price = (df_all['close'] > df_all['open']) & (df_all['close'] / df_all['open'] > 1.02) & (1.5 <= df_all['f_quantity_ratio'] <= 5.5) & (0.02 <= df_all['turnover_rate'] <= 0.18)
+    # cond_vol_price = (df_all['close'] > df_all['open']) & (df_all['close'] / df_all['open'] > 1.02) & (1.5 <= df_all['f_quantity_ratio'] <= 5.5) & (0.02 <= df_all['turnover_rate'] <= 0.18)
     cond_attack = (df_all["attack_score"] >= 70) & (df_all["buy_power_ratio"] >= 60)
-
+    cond_vol_price = (df_all['close'] > df_all['open']) & \
+                 (df_all['close'] / df_all['open'] > 1.02) & \
+                 (df_all['f_quantity_ratio'].between(1.5, 5.5)) & \
+                 (df_all['turnover_rate'].between(0.02, 0.18))
+    
     df_selected = df_all[cond_fund & cond_trend & cond_chip & cond_vol_price & cond_attack].copy()
 
     # 7. 评分、排序、入库
