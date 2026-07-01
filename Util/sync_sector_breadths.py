@@ -94,7 +94,7 @@ def sync_sector_data():
     
     ind_stats = df_rel.groupby('sector_name')['is_up'].agg(['sum', 'count']).reset_index()
     ind_stats.columns = ['sector_name', 'advancers', 'total_stocks']
-    ind_stats = ind_stats[ind_stats['total_stocks'] >= 3].copy()
+    ind_stats = ind_stats[ind_stats['total_stocks'] >= 5].copy()
     ind_stats['red_rate'] = (ind_stats['advancers'] / ind_stats['total_stocks'] * 100).round(2)
     
     ind_stats = ind_stats.sort_values('red_rate', ascending=False).reset_index(drop=True)

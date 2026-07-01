@@ -1,7 +1,12 @@
 import sys
 import os
+# 🌟 核心修复：强制清除进程内的代理环境变量
+os.environ['HTTP_PROXY'] = ''
+os.environ['HTTPS_PROXY'] = ''
+os.environ['ALL_PROXY'] = ''
 os.environ['http_proxy'] = ''
 os.environ['https_proxy'] = ''
+os.environ['no_proxy'] = '*'  # 强制所有请求直连，不走代理
 
 import akshare as ak
 import pandas as pd
