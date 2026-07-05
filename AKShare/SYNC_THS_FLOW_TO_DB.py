@@ -34,13 +34,15 @@ def sync_sector_flow_from_stock_table():
         # 1. 合并所有原始名称
         raw_official_names = set(df_ths_ind['name'].tolist()) | set(df_ths_con['name'].tolist())
         
+        # print("当前使用的黑名单:", config.SECTOR_BLACKLIST)
+        
         # 2. 🌟 核心过滤：应用 config.SECTOR_BLACKLIST 过滤无意义板块
         # 逻辑：只有当板块名不包含黑名单中任何一个关键词时，才保留
         official_names = {
-            name for name in raw_official_names 
-            if not any(noise in name for noise in config.SECTOR_BLACKLIST)
+            name.strip() for name in raw_official_names 
+            if not any(noise.strip() in name for noise in config.SECTOR_BLACKLIST)
         }
-
+        # print("official_names:", official_names)
         # 3. 构建过滤后的代码映射表
         # 先合并所有代码
         all_name_to_code = dict(zip(df_ths_ind['name'], df_ths_ind['code']))

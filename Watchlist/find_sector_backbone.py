@@ -80,5 +80,5 @@ def find_sector_backbone(target_sector):
 
 if __name__ == "__main__":
     # 示例：查找半导体或证券的中军
-    find_sector_backbone("证券")
+    find_sector_backbone("华为汽车")
     # find_sector_backbone("半导体")
