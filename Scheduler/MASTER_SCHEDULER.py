@@ -50,11 +50,11 @@ PIPELINE_QUEUE = [
     r"c:\ws\trading-polices\Watchlist\STRATEGY_RESEAL_REPAIR.py",
     # 赚钱效应 策略
     r"c:\ws\trading-polices\Watchlist\MARKET_REGIME_JUDGE.py",
+    r"c:\ws\trading-polices\Watchlist\new_face_backbone_detector.py",
     # 数据库的维护
     # r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
     r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",
     r"c:\ws\trading-polices\Util\复盘\ANALYZE_STRATEGY_SCORE_DISTRIBUTION.py",
-    r"c:\ws\trading-polices\Util\复盘\new_face_backbone_detector.py",
 ]
 
 # 1. 竞价同步脚本路径 9：25执行一次

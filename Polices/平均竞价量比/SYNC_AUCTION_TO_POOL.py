@@ -32,7 +32,7 @@ def get_sector_sentiment():
             df_sent = pd.read_sql(sql, conn)
         return dict(zip(df_sent['topic'], df_sent['avg_sent']))
     except Exception as e:
-        print(f"⚠️ 舆情获取失败(可能表为空): {e}")
+        print(f"⚠️ 舆情获取失败: {e}")
         return {}
 
 def get_metadata(conn):
@@ -55,62 +55,61 @@ def get_metadata(conn):
     return sector_map
 
 def calculate_trend_score(row):
-    """
-    打分模型：竞价(60) + 趋势动能(20) + 价格位置(20)
-    """
-    # 1. 竞价量能分 (最高 60)
+    """打分模型：竞价(60) + 趋势动能(20) + 价格位置(20)"""
     qr = float(row['avg_ratio'] or 0)
     s_vol = np.clip((qr - 1) / 9 * 60, 0, 60)
-
-    # 2. 动量分 (最高 20)
     mom = float(row['f_mom_20'] or 0)
     s_mom = np.clip(mom * 100, 0, 20) 
-
-    # 3. 价格分 (最高 20)
     pct = float(row['open_pct'] or 0)
     s_price = 20 if 2.0 <= pct <= 5.0 else (10 if 0 < pct < 2.0 else 0)
-
     return int(s_vol + s_mom + s_price)
 
 # --- 3. 主程序逻辑 ---
 
 def sync_trending_auction_signals():
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚀 启动‘趋势向上’竞价选股流...")
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚀 启动‘最新竞价 + 趋势趋势’联动探测...")
 
     # A. 获取舆情数据
     sentiment_map = get_sector_sentiment()
 
     with engine_quant.connect() as conn:
-        # B. 确定最新交易日
-        latest_date = conn.execute(text("SELECT MAX(trade_date) FROM stk_auction_signal")).scalar()
-        if not latest_date:
-            print("❌ 错误：stk_auction_signal 表为空。")
+        # 🌟 B. 核心修改：分别提取两个表的最新日期
+        latest_factor_date = conn.execute(text("SELECT MAX(trade_date) FROM stk_factors")).scalar()
+        latest_auction_date = conn.execute(text("SELECT MAX(trade_date) FROM stk_auction_signal")).scalar()
+        
+        if not latest_factor_date or not latest_auction_date:
+            print("❌ 错误：数据表为空，请检查同步。")
             return
-            
-        print(f"📅 目标日期: {latest_date}")
+
+        print(f"📅 因子基准日: {latest_factor_date}")
+        print(f"📅 竞价基准日: {latest_auction_date}")
 
         # C. 预加载板块
         sector_map_dict = get_metadata(conn)
 
-        # D. SQL 联结：竞价 + 技术因子表
+        # 🌟 D. SQL 联结：关键在于 f.trade_date 和 a.trade_date 使用各自的最新变量
         query = text("""
             SELECT 
                 a.symbol, a.name, a.avg_ratio, a.open_pct, a.auction_amount,
                 f.f_mom_20, f.f_macd_dif, f.f_macd_hist, f.f_dist_high
-            FROM stk_auction_signal a
-            JOIN stk_factors f ON a.symbol = f.symbol AND a.trade_date = f.trade_date
-            WHERE a.trade_date = :d 
-              AND a.avg_ratio >= 1.5
+            FROM stk_factors f
+            JOIN stk_auction_signal a ON f.symbol = a.symbol
+            WHERE f.trade_date = :f_date        -- 使用因子最新日期
+              AND a.trade_date = :a_date        -- 使用竞价最新日期
+              AND a.avg_ratio >= 1.5            -- 竞价量比过滤
               AND a.name NOT LIKE '%%ST%%'
               AND (a.symbol LIKE '60%%' OR a.symbol LIKE '00%%' OR a.symbol LIKE '30%%')
-              -- 🌟 物理过滤：趋势向上 (动量为正)
+              -- 趋势向上过滤
               AND f.f_mom_20 > 0
               AND f.f_macd_dif > -0.05
         """)
-        df_merged = pd.read_sql(query, conn, params={"d": latest_date})
+        df_merged = pd.read_sql(query, conn, params={
+            "f_date": latest_factor_date, 
+            "a_date": latest_auction_date
+        })
 
     if df_merged.empty:
-        print("💡 今日未发现符合‘趋势向上’硬条件的竞价信号。")
+        print(f"💡 在 [{latest_auction_date}] 竞价信号中未发现符合趋势向上的个股。")
         return
 
     records = []
@@ -120,37 +119,35 @@ def sync_trending_auction_signals():
         symbol = row['symbol']
         sectors = sector_map_dict.get(symbol, ["综合题材"])
         
-        # 🌟 舆情软过滤
+        # 舆情软过滤
         max_sent = 50 
         for s in sectors:
             if s in sentiment_map:
                 max_sent = max(max_sent, sentiment_map[s])
         
-        # 如果所属板块舆情过低，视为风险股剔除
-        if max_sent < 35:
-            continue
+        if max_sent < 35: continue
 
-        # 🌟 修正此处函数名调用
         score = calculate_trend_score(row)
         if score < 55: continue
 
         tags = {
-            "strategy": "Trend_Up_Auction",
+            "strategy": "Mixed_Date_Auction",
+            "factor_date": str(latest_factor_date),
             "mom20": round(float(row['f_mom_20']), 4),
-            "macd_dif": round(float(row['f_macd_dif']), 4),
             "sentiment": round(max_sent, 1)
         }
 
+        # 存入数据库时，以“竞价日期”作为 trade_date
         records.append({
             'symbol': symbol,
-            'trade_date': latest_date,
+            'trade_date': latest_auction_date, # 🌟 以最新的竞价日作为信号日
             'stock_name': row['name'],
             'pool_type': 'short',
             'sector_name': " / ".join(sectors[:2]),
             'score': score,
-            'status': "趋势竞价",
+            'status': "竞价异动",
             'tags': json.dumps(tags, ensure_ascii=False),
-            'notes': f"趋势向上(MOM:{tags['mom20']})，舆情分{tags['sentiment']}。竞价量比{row['avg_ratio']}。",
+            'notes': f"趋势基准:{latest_factor_date}。动量{tags['mom20']}，舆情{tags['sentiment']}。竞价量比{row['avg_ratio']}。",
             'is_watch_focus': 1 if score >= 80 else 0,
             'watch_level': 3 if score >= 80 else 1,
             'created_at': now,
@@ -161,13 +158,15 @@ def sync_trending_auction_signals():
     if records:
         df_save = pd.DataFrame(records).sort_values('score', ascending=False)
         with engine_review.begin() as conn_r:
-            conn_r.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status = '趋势竞价'"), {"d": latest_date})
+            # 以最新的竞价日期作为删除和写入的键
+            conn_r.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status = '趋势竞价'"), {"d": latest_auction_date})
             df_save.to_sql('stock_pools', con=conn_r, if_exists='append', index=False)
         
-        print(f"\n" + "✅" * 5 + f" 成功同步 {len(df_save)} 只标的至作战池 " + "✅" * 5)
+        print(f"\n✅ 成功！匹配了因子({latest_factor_date})与竞价({latest_auction_date})。")
+        print(f"🔥 新增 {len(df_save)} 只标的至作战池。")
         print(df_save[['symbol', 'stock_name', 'score', 'sector_name']].head(10).to_string(index=False))
     else:
-        print("💡 经过趋势和舆情双重过滤，无合适标的。")
+        print("💡 经过趋势和舆情双重过滤，今日无合适标的。")
 
 if __name__ == "__main__":
     sync_trending_auction_signals()
