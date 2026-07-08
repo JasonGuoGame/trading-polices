@@ -13,34 +13,57 @@ engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3
 
 def get_new_face_sectors_with_meta():
     """
-    返回符合条件的板块及其变动元数据
+    获取最新交易日所有主线板块(is_leader=1)
+    返回：
+        sector_name
+        today_rank
+        best_past_rank（仅为了兼容后续代码）
     """
-    print(f"[{datetime.datetime.now()}] 🔎 正在扫描‘绝对新面孔’黑马板块...")
-    
-    def build_query(table_name, extra_cond=""):
-        return f"""
-        SELECT sector_name, today_rank, best_past_rank FROM (
-            SELECT 
-                sector_name,
-                MAX(CASE WHEN date_idx = 1 THEN rank_pos END) as today_rank,
-                MIN(CASE WHEN date_idx BETWEEN 2 AND 6 THEN rank_pos END) as best_past_rank
-            FROM (
-                SELECT sector_name, rank_pos, trade_date,
-                       DENSE_RANK() OVER (ORDER BY trade_date DESC) as date_idx
-                FROM {table_name}
-                WHERE 1=1 {extra_cond}
-            ) t WHERE date_idx <= 6
-            GROUP BY sector_name
-        ) final 
-        WHERE today_rank <= 10 AND (best_past_rank > 30 OR best_past_rank IS NULL)
-        """
+    print(f"[{datetime.datetime.now()}] 🔎 正在扫描主线板块(is_leader=1)...")
+
+    sql_scores = text("""
+        SELECT
+            sector_name,
+            rank_pos AS today_rank,
+            rank_pos AS best_past_rank
+        FROM trading_review.stk_sector_scores
+        WHERE trade_date = (
+            SELECT MAX(trade_date)
+            FROM trading_review.stk_sector_scores
+        )
+        AND is_leader = 1
+    """)
+
+    sql_breadths = text("""
+        SELECT
+            sector_name,
+            rank_pos AS today_rank,
+            rank_pos AS best_past_rank
+        FROM trading_review.stk_sector_breadths
+        WHERE trade_date = (
+            SELECT MAX(trade_date)
+            FROM trading_review.stk_sector_breadths
+        )
+        AND is_leader = 1
+        AND sector_type = 'industry'
+    """)
 
     with engine_review.connect() as conn:
-        df1 = pd.read_sql(text(build_query("trading_review.stk_sector_scores")), conn)
-        df2 = pd.read_sql(text(build_query("trading_review.stk_sector_breadths", "AND sector_type = 'industry'")), conn)
+        df_score = pd.read_sql(sql_scores, conn)
+        df_breadth = pd.read_sql(sql_breadths, conn)
 
-    df_combined = pd.concat([df1, df2]).drop_duplicates(subset=['sector_name'])
-    return df_combined
+    # 合并两个来源
+    df = pd.concat(
+        [df_score, df_breadth],
+        ignore_index=True
+    )
+
+    # 去重，同一个板块可能两个表都有
+    df = df.drop_duplicates(subset=["sector_name"])
+
+    print(f"✅ 共发现 {len(df)} 个主线板块")
+
+    return df
 
 def find_sector_backbone(target_sector, today_str):
     query_sql = text("""

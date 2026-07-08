@@ -90,18 +90,48 @@ def sync_trending_auction_signals():
         # 🌟 D. SQL 联结：关键在于 f.trade_date 和 a.trade_date 使用各自的最新变量
         query = text("""
             SELECT 
-                a.symbol, a.name, a.avg_ratio, a.open_pct, a.auction_amount,
-                f.f_mom_20, f.f_macd_dif, f.f_macd_hist, f.f_dist_high
+                a.symbol,
+                a.name,
+                a.avg_ratio,
+                a.open_pct,
+                a.auction_amount,
+
+                f.f_mom_20,
+                f.f_macd_dif,
+                f.f_macd_hist,
+                f.f_dist_high,
+
+                k.open,
+                k.close
+
             FROM stk_factors f
-            JOIN stk_auction_signal a ON f.symbol = a.symbol
+
+            JOIN stk_auction_signal a 
+                ON f.symbol = a.symbol
+
+            JOIN stk_daily_kline k
+                ON k.symbol = a.symbol
+            AND k.trade_date = f.trade_date
+
             WHERE f.trade_date = :f_date        -- 使用因子最新日期
-              AND a.trade_date = :a_date        -- 使用竞价最新日期
-              AND a.avg_ratio >= 1.5            -- 竞价量比过滤
-              AND a.name NOT LIKE '%%ST%%'
-              AND (a.symbol LIKE '60%%' OR a.symbol LIKE '00%%' OR a.symbol LIKE '30%%')
-              -- 趋势向上过滤
-              AND f.f_mom_20 > 0
-              AND f.f_macd_dif > -0.05
+            AND a.trade_date = :a_date        -- 使用竞价最新日期
+
+            AND a.avg_ratio >= 1.5             -- 竞价量比过滤
+
+            AND a.name NOT LIKE '%%ST%%'
+
+            AND (
+                    a.symbol LIKE '60%%'
+                    OR a.symbol LIKE '00%%'
+                    OR a.symbol LIKE '30%%'
+                )
+
+            -- 趋势向上过滤
+            AND f.f_mom_20 > 0
+            AND f.f_macd_dif > -0.05
+
+            -- ★ 昨日收阳过滤
+            AND k.close > k.open
         """)
         df_merged = pd.read_sql(query, conn, params={
             "f_date": latest_factor_date, 
@@ -159,7 +189,7 @@ def sync_trending_auction_signals():
         df_save = pd.DataFrame(records).sort_values('score', ascending=False)
         with engine_review.begin() as conn_r:
             # 以最新的竞价日期作为删除和写入的键
-            conn_r.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status = '趋势竞价'"), {"d": latest_auction_date})
+            conn_r.execute(text("DELETE FROM stock_pools WHERE trade_date = :d AND status = '竞价异动'"), {"d": latest_auction_date})
             df_save.to_sql('stock_pools', con=conn_r, if_exists='append', index=False)
         
         print(f"\n✅ 成功！匹配了因子({latest_factor_date})与竞价({latest_auction_date})。")

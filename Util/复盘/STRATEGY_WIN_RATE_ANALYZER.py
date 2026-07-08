@@ -52,6 +52,7 @@ def get_strategy_performance():
         if pt == 'short' and (st == '主升接力' or st == '启动突破'): return '5. 换手率+量比动能'
         if pt == 'short' and st == '分歧反包': return '分歧反包'
         if pt == 'short' and st == '主力入场': return '主力入场'
+        if pt == 'long' and st == '长线牛': return '5. 价值长线'
         if pt == 'short' and st == '竞价异动': return '竞价异动'
         return '其他'
 
