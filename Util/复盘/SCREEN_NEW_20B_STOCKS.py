@@ -53,7 +53,7 @@ def find_real_money_movements_to_db():
                 JOIN stk_daily_kline k_y ON k_t.symbol = k_y.symbol AND k_y.trade_date = :yest
                 WHERE k_t.trade_date = :today
                   AND k_t.amount >= 1200000000           -- 12 亿门槛
-                  AND k_t.amount >= (k_y.amount * 2)     -- 倍量放量
+                  AND k_t.amount >= (k_y.amount * 1.5)     -- 倍量放量
                   AND s.name NOT LIKE '%%ST%%'
                   AND ({blacklist_filter})
             """)

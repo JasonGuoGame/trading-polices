@@ -51,15 +51,32 @@ def analyze_market_sentiment():
     """)
     df_raw = pd.read_sql(sql_k, engine_quant, params={"d": lookback_dates, "idx": INDEX_LIST})
     
-    # 3. 连板轨迹识别
+    # 3. 涨跌停、连板轨迹识别
     df_raw = df_raw.sort_values(['symbol', 'trade_date'])
     df_raw['prev_close'] = df_raw.groupby('symbol')['close'].shift(1)
     df_raw = df_raw.dropna(subset=['prev_close'])
     
-    df_raw['is_limit'] = df_raw.apply(lambda r: r['close'] >= round(r['prev_close'] * (1 + get_limit_threshold(r['symbol'])/100), 2), axis=1)
-    df_raw['is_hit'] = df_raw.apply(lambda r: r['high'] >= round(r['prev_close'] * (1 + get_limit_threshold(r['symbol'])/100), 2), axis=1)
+    # 🌟 修复后的核心：动态判断涨停和跌停
+    def check_limit_status(r):
+        threshold = get_limit_threshold(r['symbol']) / 100
+        # 涨停价（考虑四舍五入精度）
+        limit_up_price = round(r['prev_close'] * (1 + threshold), 2)
+        # 跌停价（考虑四舍五入精度）
+        limit_down_price = round(r['prev_close'] * (1 - threshold), 2)
+        
+        return pd.Series({
+            'is_limit': r['close'] >= limit_up_price,
+            'is_limit_down': r['close'] <= limit_down_price,
+            'is_hit': r['high'] >= limit_up_price
+        })
+
+    # 应用判断函数
+    limit_status = df_raw.apply(check_limit_status, axis=1)
+    df_raw = pd.concat([df_raw, limit_status], axis=1)
+    
     df_raw['chg_pct'] = (df_raw['close'] / df_raw['prev_close'] - 1) * 100
 
+    # 连板高度计算
     df_raw['board_height'] = 0
     for sym, group in df_raw.groupby('symbol'):
         height = 0
@@ -109,10 +126,15 @@ def analyze_market_sentiment():
     else: score += min(up_ratio / 10, 10)
     
     score += min(limit_up_today / 8, 10)
-    limit_down_count = (df_today['chg_pct'] <= -9.8).sum()
+
+    # 🌟 修复此处：使用刚才动态判断的结果
+    limit_down_count = df_today['is_limit_down'].sum() 
+    
     if limit_down_count > 30: score -= 20 
     elif limit_down_count > 10: score += 0
     else: score += 10
+    
+    # ... 其余逻辑保持不变 ...
     
     score += max(15 * (1 - broken_rate/100), 0)
     score += min(max(all_limit_p * 5, 0), 20)

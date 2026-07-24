@@ -113,7 +113,7 @@ def save_to_long_pool(df_stocks, sector_meta, today):
         }
 
         # 2. 构建 Notes
-        note_str = (f"板块[{sector_meta['sector_name']}]突围中军。该板块过去5天均在30名外，今日冲入第{int(sector_meta['today_rank'])}名。 "
+        note_str = (f"板块[{sector_meta['sector_name']}]突围中军。连强信号板块，今日{int(sector_meta['today_rank'])}名。 "
                     f"个股今日成交{tags_dict['amount_eb']}亿，资金评分{tags_dict['capital_score']}，处于健康进攻态势。")
 
         # 3. 准备入库记录

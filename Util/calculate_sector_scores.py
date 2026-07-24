@@ -86,13 +86,80 @@ def calculate_sector_scores_v4():
         profit_s = (up_rate * 10) + min(limit_count * 2, 10) + max(5 * (1 - broken_rate), 0)
 
         # 3. 龙头强度 (20)
-        unique_group = group.drop_duplicates(subset=['symbol'])
-        leaders = unique_group.sort_values('amount', ascending=False).head(3)
-        l_avg_chg = leaders['chg_pct'].mean()
-        if l_avg_chg > 2 and l_avg_chg > unique_group['chg_pct'].mean(): leader_s = 20
-        elif l_avg_chg < 0: leader_s = 5
-        else: leader_s = 12
+        # unique_group = group.drop_duplicates(subset=['symbol'])
+        # leaders = unique_group.sort_values('amount', ascending=False).head(3)
+        # l_avg_chg = leaders['chg_pct'].mean()
+        # if l_avg_chg > 2 and l_avg_chg > unique_group['chg_pct'].mean(): leader_s = 20
+        # elif l_avg_chg < 0: leader_s = 5
+        # else: leader_s = 12
+        # 3. 龙头强度 (20)
 
+        unique_group = group.drop_duplicates(
+            subset=['symbol']
+        )
+        
+        # 成交额前5作为核心股
+        leaders = (
+            unique_group
+            .sort_values(
+                'amount',
+                ascending=False
+            )
+            .head(5)
+        )
+
+
+        # 核心股平均涨幅
+        leader_pct = leaders['chg_pct'].mean()
+
+
+        # A. 核心股表现 5分
+        if leader_pct >= 5:
+            core_score = 5
+        elif leader_pct >= 3:
+            core_score = 5
+        elif leader_pct >= 0:
+            core_score = 3
+        else:
+            core_score = 0
+
+
+        # B. 涨停扩散 10分
+        limit_count = unique_group['is_limit'].sum()
+
+        if limit_count >= 20:
+            limit_score = 10
+        elif limit_count >= 10:
+            limit_score = 6
+        else:
+            limit_score = 0
+
+        
+        # C. 成交额核心度 5分
+
+        top_amount = leaders['amount'].sum()
+
+        sector_amount = unique_group['amount'].sum()
+
+        amount_ratio = top_amount / sector_amount
+
+
+        if amount_ratio >=0.3:
+            amount_score = 5
+        elif amount_ratio >=0.15:
+            amount_score = 3
+        else:
+            amount_score = 1
+
+
+        leader_s = (
+            core_score
+            +
+            limit_score
+            +
+            amount_score
+        )
+     
         # 4. 攻击力度 (15)
         attack_s = min(unique_group['symbol'].isin(attack_symbols).sum() * 1.5, 15)
 

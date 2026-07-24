@@ -13,7 +13,7 @@ os.environ['https_proxy'] = ''
 # =================================================
 # 🌟 填入你浏览器里的完整 Cookie
 # =================================================
-MY_COOKIE = "Hm_lvt_bbac0322e6ee13093f98d5c4b5a10912=1782782154,1782822521; HMACCOUNT=BF1EAB14792B6911; __gads=ID=3b056e749e8f0732:T=1782782181:RT=1783472323:S=ALNI_Ma5xvyDhOkSTlEPUQBLq3OazTLxYQ; __gpi=UID=0000140519f0fcf6:T=1782782181:RT=1783472323:S=ALNI_Ma8O7ylQf__9lGy6xmgxT75sAO2ng; __eoi=ID=b8b049934c9d968b:T=1782782181:RT=1783472323:S=AA-AfjYiO1Hi_IO_vOouykpm4hSu; main[UTMPUSERID]=gcgame; main[UTMPKEY]=87485425; main[UTMPNUM]=5372; Hm_lpvt_bbac0322e6ee13093f98d5c4b5a10912=1783472355"
+MY_COOKIE = "Hm_lvt_bbac0322e6ee13093f98d5c4b5a10912=1782782154,1782822521; HMACCOUNT=BF1EAB14792B6911; __gads=ID=3b056e749e8f0732:T=1782782181:RT=1784769299:S=ALNI_Ma5xvyDhOkSTlEPUQBLq3OazTLxYQ; __gpi=UID=0000140519f0fcf6:T=1782782181:RT=1784769299:S=ALNI_Ma8O7ylQf__9lGy6xmgxT75sAO2ng; __eoi=ID=b8b049934c9d968b:T=1782782181:RT=1784769299:S=AA-AfjYiO1Hi_IO_vOouykpm4hSu; main[UTMPUSERID]=gcgame; main[UTMPKEY]=94017538; main[UTMPNUM]=4718; Hm_lpvt_bbac0322e6ee13093f98d5c4b5a10912=1784769302"
 
 engine = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review')
 
