@@ -7,13 +7,15 @@ import time
 # ================= 配置区 =================
 # 脚本路径定义 (顺序执行全量工作流)
 PIPELINE_QUEUE = [
-    r"C:\ws\trading-polices\Database\日线数据\DAILY_UPDATE_MYSQL.py",
+    # r"C:\ws\trading-polices\Database\日线数据\DAILY_UPDATE_MYSQL.py",
+    # 切换到大QMT, TODO: 切换数据据
+    r"C:\ws\trading-polices\Database\日线数据\BUILD_DAILY_FROM_MIN.py",
     # 更新 沪深300 等当日指数的数据到 daily kline
-    r"c:\ws\trading-polices\Database\日线数据\SYNC_INDEX_TODAY.py",
+    # r"c:\ws\trading-polices\Database\日线数据\SYNC_INDEX_TODAY.py",
     # 更新因子表 rsi macd boll
     r"C:\ws\trading-polices\Database\因子数据库\UPDATE_FACTORS_INCREMENTAL.py",
     # 更新分时数据库 从这个表里寻找资金异动
-    r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py",
+    # r"C:\ws\trading-polices\Database\分时数据\SYNC_30D_MINUTES.py",
     # 大盘的情绪分析
     r"C:\ws\trading-polices\Util\MARKET_SENTIMENT.py",
     # 大盘的情绪分析
@@ -51,7 +53,8 @@ PIPELINE_QUEUE = [
     # 赚钱效应 策略
     r"c:\ws\trading-polices\Watchlist\MARKET_REGIME_JUDGE.py",
     r"c:\ws\trading-polices\Watchlist\new_face_backbone_detector.py",
-    r"c:\ws\trading-polices\Watchlist\VEGAS.py",
+    # comment it, feel the police is useless.
+    # r"c:\ws\trading-polices\Watchlist\VEGAS.py",
     # 数据库的维护
     # r"C:\ws\trading-polices\Database\DB_ROLLING_MAINTENANCE.py",
     r"c:\ws\trading-polices\Util\复盘\STRATEGY_WIN_RATE_ANALYZER.py",
@@ -85,8 +88,8 @@ def is_within_running_window():
 
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
-    is_morning = ("09:50" <= current_time < "11:30")
-    is_afternoon = ("13:00" <= current_time < "15:25")
+    is_morning = ("10:00" <= current_time < "11:30")
+    is_afternoon = ("13:00" <= current_time < "15:30")
     
     if is_morning:
         return True, "早盘运行中"
@@ -157,14 +160,14 @@ def main_loop():
         current_time_str = now.strftime("%H:%M")
         
         # --- 核心新增：09:26 竞价同步触发逻辑 ---
-        if now.weekday() <= 4: # 周一到周五
-            if current_time_str == "09:26" and auction_synced_today != current_date:
-                print(f"\n" + "🔔" * 5 + " 触发每日 09:26 竞价同步任务 " + "🔔" * 5)
-                subprocess.run([PYTHON_PATH, PATH_AUCTION], check=False)
-                subprocess.run([PYTHON_PATH, PATH_AUCTION_TO_POOL], check=False)
-                subprocess.run([PYTHON_PATH, PATH_AUCTION_DETECTOR], check=False)
-                auction_synced_today = current_date # 标记今天已运行
-                print("✅ 竞价任务执行完毕，继续等待 10:00 循环开启。")
+        # if now.weekday() <= 4: # 周一到周五
+        #     if current_time_str == "09:26" and auction_synced_today != current_date:
+        #         print(f"\n" + "🔔" * 5 + " 触发每日 09:26 竞价同步任务 " + "🔔" * 5)
+        #         subprocess.run([PYTHON_PATH, PATH_AUCTION], check=False)
+        #         subprocess.run([PYTHON_PATH, PATH_AUCTION_TO_POOL], check=False)
+        #         subprocess.run([PYTHON_PATH, PATH_AUCTION_DETECTOR], check=False)
+        #         auction_synced_today = current_date # 标记今天已运行
+        #         print("✅ 竞价任务执行完毕，继续等待 10:00 循环开启。")
         
         # --- 核心新增：中午计算筹码峰因子 ---
         # if now.weekday() <= 4: # 周一到周五
@@ -182,8 +185,8 @@ def main_loop():
             if success:
                 cycle_count += 1
             
-            # 每一轮跑完后微调休息 5 秒，防止极端情况下 CPU 负载过高
-            time.sleep(5)
+            # 每一轮跑完后微调休息 5 分钟，防止极端情况下 CPU 负载过高
+            time.sleep(300)
         else:
             # 如果没到 10:00 或者处于午休
             now = datetime.datetime.now().strftime("%H:%M:%S")
