@@ -106,11 +106,11 @@ def calculate_sector_scores_v4():
         f = df_flow.loc[name]
         m_score = min(max(float(f['net_inflow_amount'])/1e8 * 1.5, 0), 15) + min(max(float(f['net_inflow_rate']) * 2, 0), 10) + (5 if float(f['net_inflow_amount']) > 0 else 0)
 
-        # 2. 赚钱效应分 (25)
+        # 2. 赚钱效应分 (30)
         up_rate = (group['chg_pct'] > 0).sum() / len(group)
         limit_count = group['is_limit'].sum()
         broken_rate = (group['hit_limit'].sum() - limit_count) / group['hit_limit'].sum() if group['hit_limit'].sum() > 0 else 0
-        profit_s = (up_rate * 10) + min(limit_count * 2, 10) + max(5 * (1 - broken_rate), 0)
+        profit_s = (up_rate * 15) + min(limit_count * 2, 10) + max(5 * (1 - broken_rate), 0)
 
         # 3. 龙头强度 (20)
         unique_group = group.drop_duplicates(subset=['symbol'])

@@ -1,123 +1,112 @@
 import pandas as pd
-from xtquant import xtdata
+import numpy as np
 from sqlalchemy import create_engine, text
 import datetime
-import sys
-import numpy as np
 
-# --- 1. 数据库配置（仅用于读取历史基准量 V5） ---
+# --- 1. 数据库配置（直接读取已入库的数据） ---
 engine = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db')
 
 def get_auction_sentiment_report():
-    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🚀 正在生成全市场竞价热力报告...")
+    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🚀 正在生成全市场竞价热力报告 (纯 DB 模式)...")
 
-    # 1. 从 MySQL 提取全市场 5 日历史开盘均量 (V5) 作为基准
-    history_sql = """
-    SELECT symbol, AVG(volume) as v5_avg
-    FROM (
-        SELECT symbol, volume,
-               ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_time DESC) as rn
-        FROM stk_min_kline
-        WHERE TIME(trade_time) = '09:30:00'
-    ) t
-    WHERE rn <= 5
-    GROUP BY symbol
+    # 获取今天的日期字符串 'YYYY-MM-DD'
+    today_str = datetime.date.today().strftime('%Y-%m-%d')
+
+    # 1. 查询今天的竞价数据，以及过去 5 个交易日的历史均值 (V5)
+    # 通过一次 SQL 查询搞定，极大提升效率
+    sql = """
+    WITH hist_5d AS (
+        -- 计算过去 5 个记录日的平均竞价金额
+        SELECT symbol, AVG(auction_amount) as v5_avg_amount
+        FROM (
+            SELECT symbol, auction_amount,
+                   ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
+            FROM stk_auction_signal
+            WHERE trade_date < CURDATE()
+        ) t
+        WHERE rn <= 5
+        GROUP BY symbol
+    )
+    SELECT 
+        curr.symbol,
+        curr.name,
+        curr.auction_amount as today_amount,  -- 今日竞价金额 (万元)
+        curr.open_pct,                       -- 今日开盘涨幅 (%)
+        h.v5_avg_amount                       -- 历史 5 日均额 (万元)
+    FROM stk_auction_signal curr
+    LEFT JOIN hist_5d h ON curr.symbol = h.symbol
+    WHERE curr.trade_date = CURDATE();
     """
     
     try:
         with engine.connect() as conn:
-            df_v5 = pd.read_sql(text(history_sql), conn)
+            df = pd.read_sql(text(sql), conn)
     except Exception as e:
         print(f"❌ 数据库读取失败: {e}")
         return
 
-    if df_v5.empty:
-        print("❌ 错误：MySQL 中没有足够的历史数据来计算 V5 基准量。")
+    if df.empty:
+        print(f"❌ 提示：数据库中未找到今日 ({today_str}) 的竞价数据。请确认 09:25 的 QMT 采集脚本已运行入库。")
         return
 
-    v5_map = dict(zip(df_v5['symbol'], df_v5['v5_avg']))
-    target_stocks = list(v5_map.keys())
+    # 2. 过滤有效交易股票（剔除停牌、今日无竞价金额的标的）
+    df_valid = df[(df['today_amount'] > 0) & (df['v5_avg_amount'] > 0)].copy()
 
-    # 2. 从 QMT 获取今日实时竞价快照 (请在 09:25:01 之后运行)
-    xtdata.enable_hello = False
-    ticks = xtdata.get_full_tick(target_stocks)
-
-    if not ticks:
-        print("❌ 未能获取实时快照，请检查 QMT 行情连接状态。")
+    if df_valid.empty:
+        print("❌ 未能筛选出有效的比对数据（可能历史数据不足 5 天）。")
         return
 
-    # 3. 计算全市场统计指标
-    all_ratios = []
-    total_amount = 0
-    up_count = 0
-    down_count = 0
-    flat_count = 0
-    total_valid_stocks = 0
+    # 3. 计算单股量比（基于竞价成交额）
+    df_valid['ratio'] = df_valid['today_amount'] / df_valid['v5_avg_amount']
 
-    for symbol, tick in ticks.items():
-        if symbol in v5_map:
-            today_v = tick.get('volume', 0)
-            base_v = v5_map[symbol]
-            last_close = tick.get('lastClose', 0)
-            last_price = tick.get('lastPrice', 0)
-            
-            # 过滤掉停牌或无交易数据的股票
-            if base_v > 0 and last_close > 0 and today_v > 0:
-                ratio = today_v / base_v
-                all_ratios.append(ratio)
-                
-                total_amount += tick.get('amount', 0)
-                total_valid_stocks += 1
-                
-                # 计算涨跌分布
-                change_pct = (last_price / last_close - 1) * 100
-                if change_pct > 0.05: # 略微考虑滑点，0.05% 以上计入红盘
-                    up_count += 1
-                elif change_pct < -0.05:
-                    down_count += 1
-                else:
-                    flat_count += 1
+    # 4. 统计指标计算
+    all_ratios = df_valid['ratio'].values
+    market_avg_ratio = np.mean(all_ratios)
+    market_median_ratio = np.median(all_ratios)
+    
+    # 竞价总金额（数据库存的是万元，需转为亿元）
+    total_amount_亿 = df_valid['today_amount'].sum() / 10000.0  
+    
+    total_valid_stocks = len(df_valid)
+    up_count = len(df_valid[df_valid['open_pct'] > 0.05])
+    down_count = len(df_valid[df_valid['open_pct'] < -0.05])
+    flat_count = total_valid_stocks - up_count - down_count
+    
+    up_rate = (up_count / total_valid_stocks) * 100 if total_valid_stocks > 0 else 0
 
-    # 4. 输出最终热力报告
-    if all_ratios:
-        market_avg_ratio = np.mean(all_ratios)
-        market_median_ratio = np.median(all_ratios)
-        total_amount_亿 = total_amount / 100000000
-        up_rate = (up_count / total_valid_stocks) * 100
-
-        print("\n" + "🏮" * 25)
-        print(f"📊 A股竞价热力报告 ({datetime.datetime.now().strftime('%H:%M:%S')})")
-        print("-" * 50)
-        
-        # 指标 A: 活跃度
-        print(f"🔹 全市场平均竞价量比: {market_avg_ratio:.2f}")
-        print(f"🔹 全市场量比中位数:   {market_median_ratio:.2f}")
-        
-        # 指标 B: 资金参与度
-        print(f"🔹 竞价成交总金额:     {total_amount_亿:.2f} 亿元")
-        
-        # 指标 C: 涨跌强度
-        print(f"🔹 竞价红盘率:         {up_rate:.1f}%")
-        print(f"🔹 涨跌分布: 📈红盘({up_count}) | 📉绿盘({down_count}) | ⚪平盘({flat_count})")
-        
-        print("-" * 50)
-        
-        # 情绪综合评定逻辑
-        if market_avg_ratio > 1.3 and up_rate > 65 and total_amount_亿 > 40:
-            sentiment = "🔥 极度亢奋（资金疯狂抢筹）"
-        elif market_avg_ratio > 1.0 and up_rate > 50:
-            sentiment = "⭐ 情绪活跃（多头占优）"
-        elif market_avg_ratio < 0.8 and up_rate < 40:
-            sentiment = "❄️ 情绪低迷（资金观望为主）"
-        else:
-            sentiment = "🌀 情绪平淡（多空均衡）"
-            
-        print(f"🚩 盘面结论: {sentiment}")
-        print("-" * 50)
-        print("💡 注：量比基于过去 5 日竞价成交量计算；成交总额反映全市场资金参与热度。")
-        print("🏮" * 25 + "\n")
+    # 5. 输出热力报告
+    print("\n" + "🏮" * 25)
+    print(f"📊 A股竞价热力报告 ({datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
+    print("-" * 50)
+    print(f"🔹 统计有效标的数:   {total_valid_stocks} 只")
+    
+    # 指标 A: 活跃度
+    print(f"🔹 全市场平均竞价量比: {market_avg_ratio:.2f}")
+    print(f"🔹 全市场量比中位数:   {market_median_ratio:.2f}")
+    
+    # 指标 B: 资金参与度
+    print(f"🔹 竞价成交总金额:     {total_amount_亿:.2f} 亿元")
+    
+    # 指标 C: 涨跌强度
+    print(f"🔹 竞价红盘率:         {up_rate:.1f}%")
+    print(f"🔹 涨跌分布: 📈红盘({up_count}) | 📉绿盘({down_count}) | ⚪平盘({flat_count})")
+    
+    print("-" * 50)
+    
+    # 情绪综合评定逻辑
+    if market_avg_ratio > 1.3 and up_rate > 65 and total_amount_亿 > 40:
+        sentiment = "🔥 极度亢奋（资金疯狂抢筹）"
+    elif market_avg_ratio > 1.0 and up_rate > 50:
+        sentiment = "⭐ 情绪活跃（多头占优）"
+    elif market_avg_ratio < 0.8 and up_rate < 40:
+        sentiment = "❄️ 情绪低迷（资金观望为主）"
     else:
-        print("未能计算出有效量比数据，请确认当前处于交易时段或 QMT 数据已更新。")
+        sentiment = "🌀 情绪平淡（多空均衡）"
+        
+    print(f"🚩 盘面结论: {sentiment}")
+    print("-" * 50)
+    print("💡 注：报告数据完全基于数据库 stk_auction_signal 提取计算。")
+    print("🏮" * 25 + "\n")
 
 if __name__ == "__main__":
     get_auction_sentiment_report()
