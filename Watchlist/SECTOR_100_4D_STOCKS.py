@@ -1,190 +1,1518 @@
-import json
 import pandas as pd
-from sqlalchemy import create_engine, text
-import datetime
-import sys
 import numpy as np
+import datetime
+from sqlalchemy import create_engine, text
 
-# --- 数据库配置 ---
-DB_URL = 'mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db'
-engine = create_engine(DB_URL)
-engine_review = create_engine('mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review')
 
-def get_latest_trade_date():
-    with engine.connect() as conn:
-        res = conn.execute(text("SELECT MAX(trade_date) FROM stk_daily_kline")).scalar()
-    return res
+# ============================================================
+# 数据库配置
+# ============================================================
 
-# -------------------------
-# scoring (100 分制打分模型)
-# -------------------------
+QUANT_DB_URL = (
+    "mysql+pymysql://root:root_secret_2026@localhost:3306/quant_db"
+)
+
+REVIEW_DB_URL = (
+    "mysql+pymysql://root:root_secret_2026@localhost:3306/trading_review"
+)
+
+quant_engine = create_engine(QUANT_DB_URL)
+review_engine = create_engine(REVIEW_DB_URL)
+
+
+# ============================================================
+# 基础配置
+# ============================================================
+
+TODAY = datetime.date.today()
+
+# 如果需要指定交易日期，可以直接修改这里
+# TODAY = datetime.date(2026, 9, 11)
+
+STATUS = "四维共振"
+
+TOP_N = 5
+
+
+# ============================================================
+# 工具函数
+# ============================================================
+
+def safe_float(value, default=0.0):
+    """
+    安全转换 float
+    """
+    try:
+        if pd.isna(value):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def clean_sector_name(sector_name):
+    """
+    清洗板块名称
+
+    例如：
+        行业-通信 -> 通信
+        行业-计算机 -> 计算机
+        概念-国资云概念 -> 国资云概念
+    """
+    if sector_name is None:
+        return ""
+
+    sector_name = str(sector_name).strip()
+
+    if sector_name.startswith("行业-"):
+        sector_name = sector_name[3:]
+
+    return sector_name
+
+
+# ============================================================
+# 1. 获取某张表当天最新的公共 snapshot_time
+# ============================================================
+
+def get_latest_snapshot_time(table_name, trade_date):
+    """
+    获取某张表当天最新 snapshot_time。
+
+    注意：
+    不是每个板块自己 MAX(snapshot_time)，
+    而是整个表当天统一取 MAX(snapshot_time)。
+
+    这样可以保证 Top5 中的板块来自同一个盘中快照。
+    """
+
+    sql = text(f"""
+        SELECT MAX(snapshot_time)
+        FROM {table_name}
+        WHERE trade_date = :trade_date
+          AND snapshot_time IS NOT NULL
+    """)
+
+    with review_engine.connect() as conn:
+        result = conn.execute(
+            sql,
+            {"trade_date": trade_date}
+        ).scalar()
+
+    return result
+
+
+# ============================================================
+# 2. 获取 stk_sector_scores Top5
+# ============================================================
+
+def get_top5_from_scores(trade_date):
+    """
+    从 stk_sector_scores 独立寻找 Top5。
+
+    排序逻辑：
+
+    1. rank_change DESC
+    2. rank_pos ASC
+
+    rank_change 越大，说明排名提升越明显。
+    """
+
+    table_name = "stk_sector_scores"
+
+    latest_snapshot = get_latest_snapshot_time(
+        table_name,
+        trade_date
+    )
+
+    if latest_snapshot is None:
+        print(
+            f"[WARN] {table_name} "
+            f"{trade_date} 没有 snapshot_time 数据"
+        )
+        return pd.DataFrame()
+
+    print()
+    print("=" * 80)
+    print("【1】stk_sector_scores 独立寻找 Top5")
+    print("=" * 80)
+
+    print(f"最新 snapshot_time: {latest_snapshot}")
+
+    sql = text("""
+        SELECT
+            trade_date,
+            sector_name,
+            total_score,
+            rank_pos,
+            rank_change,
+            persistence_7d,
+            is_leader,
+            high_20d_count,
+            high_60d_count,
+            high_250d_count,
+            snapshot_time
+        FROM stk_sector_scores
+        WHERE trade_date = :trade_date
+          AND snapshot_time = :snapshot_time
+        ORDER BY
+            rank_change DESC,
+            rank_pos ASC
+        LIMIT 5
+    """)
+
+    df = pd.read_sql(
+        sql,
+        review_engine,
+        params={
+            "trade_date": trade_date,
+            "snapshot_time": latest_snapshot
+        }
+    )
+
+    if df.empty:
+        print("没有找到 Top5")
+        return df
+
+    df["source_type"] = "强度"
+
+    print()
+    print(
+        f"{'排名':<6}"
+        f"{'板块':<25}"
+        f"{'当前排名':<10}"
+        f"{'排名变化':<10}"
+        f"{'总分':<10}"
+    )
+
+    print("-" * 80)
+
+    for idx, row in df.iterrows():
+
+        print(
+            f"{idx + 1:<6}"
+            f"{str(row['sector_name']):<25}"
+            f"{int(row['rank_pos']):<10}"
+            f"{safe_float(row['rank_change']):<10.0f}"
+            f"{safe_float(row['total_score']):<10.2f}"
+        )
+
+    return df
+
+
+# ============================================================
+# 3. 获取 stk_sector_breadths Top5
+# ============================================================
+
+def get_top5_from_breadths(trade_date):
+    """
+    从 stk_sector_breadths 独立寻找 Top5。
+
+    只使用：
+
+        sector_type = industry
+
+    排序：
+
+        rank_change DESC
+        rank_pos ASC
+    """
+
+    table_name = "stk_sector_breadths"
+
+    latest_snapshot = get_latest_snapshot_time(
+        table_name,
+        trade_date
+    )
+
+    if latest_snapshot is None:
+        print(
+            f"[WARN] {table_name} "
+            f"{trade_date} 没有 snapshot_time 数据"
+        )
+        return pd.DataFrame()
+
+    print()
+    print("=" * 80)
+    print("【2】stk_sector_breadths 独立寻找 Top5")
+    print("=" * 80)
+
+    print(f"最新 snapshot_time: {latest_snapshot}")
+
+    sql = text("""
+        SELECT
+            trade_date,
+            sector_name,
+            sector_type,
+            red_rate,
+            advancers,
+            total_stocks,
+            rank_pos,
+            rank_change,
+            persistence_7d,
+            is_leader,
+            high_20d_count,
+            high_60d_count,
+            high_250d_count,
+            snapshot_time
+        FROM stk_sector_breadths
+        WHERE trade_date = :trade_date
+          AND snapshot_time = :snapshot_time
+          AND sector_type = 'industry'
+        ORDER BY
+            rank_change DESC,
+            rank_pos ASC
+        LIMIT 5
+    """)
+
+    df = pd.read_sql(
+        sql,
+        review_engine,
+        params={
+            "trade_date": trade_date,
+            "snapshot_time": latest_snapshot
+        }
+    )
+
+    if df.empty:
+        print("没有找到 Top5")
+        return df
+
+    df["source_type"] = "宽度"
+
+    print()
+    print(
+        f"{'排名':<6}"
+        f"{'板块':<25}"
+        f"{'当前排名':<10}"
+        f"{'排名变化':<10}"
+        f"{'红盘率':<10}"
+    )
+
+    print("-" * 80)
+
+    for idx, row in df.iterrows():
+
+        print(
+            f"{idx + 1:<6}"
+            f"{str(row['sector_name']):<25}"
+            f"{int(row['rank_pos']):<10}"
+            f"{safe_float(row['rank_change']):<10.0f}"
+            f"{safe_float(row['red_rate']):<10.2f}"
+        )
+
+    return df
+
+
+# ============================================================
+# 4. 合并两个 Top5 的板块
+# ============================================================
+
+def build_selected_sectors(df_score_top5, df_breadth_top5):
+    """
+    注意：
+
+    这里不是把两个表的 rank_change 相加。
+
+    两张表各自产生 Top5。
+
+    如果同一个板块同时进入两个 Top5：
+        -> 最终只保留一个板块
+        -> 后续只寻找一个龙头
+
+    保留规则：
+
+        优先保留 rank_change 更大的来源
+        如果相同，则保留 rank_pos 更靠前的来源
+    """
+
+    records = []
+
+    if df_score_top5 is not None and not df_score_top5.empty:
+
+        for _, row in df_score_top5.iterrows():
+
+            sector = clean_sector_name(row["sector_name"])
+
+            records.append({
+                "sector_name": sector,
+                "source_type": "强度",
+                "rank_change": safe_float(row["rank_change"]),
+                "rank_pos": int(row["rank_pos"]),
+                "snapshot_time": row["snapshot_time"],
+                "total_score": safe_float(
+                    row.get("total_score", 0)
+                ),
+                "red_rate": None
+            })
+
+    if df_breadth_top5 is not None and not df_breadth_top5.empty:
+
+        for _, row in df_breadth_top5.iterrows():
+
+            sector = clean_sector_name(row["sector_name"])
+
+            records.append({
+                "sector_name": sector,
+                "source_type": "宽度",
+                "rank_change": safe_float(row["rank_change"]),
+                "rank_pos": int(row["rank_pos"]),
+                "snapshot_time": row["snapshot_time"],
+                "total_score": None,
+                "red_rate": safe_float(
+                    row.get("red_rate", 0)
+                )
+            })
+
+    if not records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+
+    # --------------------------------------------------------
+    # 同一个板块如果同时进入两个 Top5
+    #
+    # 不合并 rank_change
+    #
+    # 只选择一个来源记录
+    # --------------------------------------------------------
+
+    df = df.sort_values(
+        [
+            "sector_name",
+            "rank_change",
+            "rank_pos"
+        ],
+        ascending=[
+            True,
+            False,
+            True
+        ]
+    )
+
+    df = df.drop_duplicates(
+        subset=["sector_name"],
+        keep="first"
+    )
+
+    # 最终展示顺序
+    df = df.sort_values(
+        [
+            "rank_change",
+            "rank_pos"
+        ],
+        ascending=[
+            False,
+            True
+        ]
+    ).reset_index(drop=True)
+
+    return df
+
+
+# ============================================================
+# 5. 获取指定板块的股票
+# ============================================================
+
+def get_sector_stocks(sectors):
+    """
+    从 stock_sector_relation 获取指定板块的股票。
+
+    一个股票可能属于多个板块。
+    这里保留所有关系。
+
+    后面会按照每一个板块分别寻找自己的龙头。
+    """
+
+    if not sectors:
+        return pd.DataFrame()
+
+    # 去重
+    sectors = list(dict.fromkeys(sectors))
+
+    # 使用 OR / LIKE 匹配，保持和原来的逻辑兼容
+    conditions = []
+    params = {}
+
+    for i, sector in enumerate(sectors):
+
+        param_name = f"sector_{i}"
+
+        # 这里使用：
+        # sector_name = xxx
+        # 或 sector_name LIKE %xxx%
+        conditions.append(
+            f"""
+            (
+                r.sector_name = :{param_name}
+                OR r.sector_name LIKE :like_{param_name}
+            )
+            """
+        )
+
+        params[param_name] = sector
+        params[f"like_{param_name}"] = f"%{sector}%"
+
+    where_sql = " OR ".join(conditions)
+
+    sql = text(f"""
+        SELECT
+            r.symbol,
+            s.name AS stock_name,
+            r.sector_name
+        FROM stock_sector_relation r
+        JOIN stocks s
+          ON r.symbol = s.symbol
+        WHERE
+            ({where_sql})
+            AND s.name NOT LIKE '%ST%'
+            AND s.name NOT LIKE '%退%'
+    """)
+
+    df = pd.read_sql(
+        sql,
+        quant_engine,
+        params=params
+    )
+
+    if df.empty:
+        return df
+
+    # --------------------------------------------------------
+    # 建立股票 -> 所属目标板块
+    # --------------------------------------------------------
+
+    mapping = (
+        df.groupby(
+            ["symbol", "stock_name"]
+        )["sector_name"]
+        .apply(list)
+        .reset_index()
+    )
+
+    mapping.rename(
+        columns={
+            "sector_name": "sector_names"
+        },
+        inplace=True
+    )
+
+    mapping["sector_names"] = mapping["sector_names"].apply(
+        lambda x: [
+            clean_sector_name(v)
+            for v in x
+        ]
+    )
+
+    return mapping
+
+
+# ============================================================
+# 6. 获取因子数据
+# ============================================================
+
+def get_stock_factors(symbols, trade_date):
+
+    if not symbols:
+        return pd.DataFrame()
+
+    syms = ",".join(
+        "'" + str(s).replace("'", "''") + "'"
+        for s in symbols
+    )
+
+    sql = f"""
+        SELECT
+            symbol,
+            f_mom_20,
+            f_macd_dif,
+            f_macd_dea,
+            f_macd_hist,
+            f_bb_m,
+            f_quantity_ratio,
+            f_dist_high
+        FROM stk_factors
+        WHERE trade_date = '{trade_date}'
+          AND symbol IN ({syms})
+    """
+
+    return pd.read_sql(
+        sql,
+        quant_engine
+    )
+
+
+# ============================================================
+# 7. 获取日线数据
+# ============================================================
+
+def get_stock_kline(symbols, trade_date):
+
+    if not symbols:
+        return pd.DataFrame()
+
+    syms = ",".join(
+        "'" + str(s).replace("'", "''") + "'"
+        for s in symbols
+    )
+
+    sql = f"""
+        SELECT
+            symbol,
+            open,
+            close,
+            turnover_rate
+        FROM stk_daily_kline
+        WHERE trade_date = '{trade_date}'
+          AND symbol IN ({syms})
+    """
+
+    return pd.read_sql(
+        sql,
+        quant_engine
+    )
+
+
+# ============================================================
+# 8. 获取资金数据
+# ============================================================
+
+def get_stock_fund_flow(symbols, trade_date):
+
+    if not symbols:
+        return pd.DataFrame()
+
+    syms = ",".join(
+        "'" + str(s).replace("'", "''") + "'"
+        for s in symbols
+    )
+
+    sql = f"""
+        SELECT
+            symbol,
+            main_net_inflow,
+            main_net_ratio,
+            inflow_3d,
+            buy_power_ratio,
+            attack_score,
+            capital_score,
+            volume_power_ratio
+        FROM stk_stock_fund_flow
+        WHERE trade_date = '{trade_date}'
+          AND symbol IN ({syms})
+    """
+
+    return pd.read_sql(
+        sql,
+        quant_engine
+    )
+
+
+# ============================================================
+# 9. 获取筹码数据
+# ============================================================
+
+def get_stock_chip(symbols, trade_date):
+
+    if not symbols:
+        return pd.DataFrame()
+
+    syms = ",".join(
+        "'" + str(s).replace("'", "''") + "'"
+        for s in symbols
+    )
+
+    sql = f"""
+        SELECT
+            symbol,
+            profit_ratio,
+            chip_score
+        FROM stk_chip_factor
+        WHERE trade_date = '{trade_date}'
+          AND symbol IN ({syms})
+    """
+
+    return pd.read_sql(
+        sql,
+        quant_engine
+    )
+
+
+# ============================================================
+# 10. 四维共振评分
+# ============================================================
+
 def calc_4d_score(row):
+
     score = 0
-    # 1. 恒强板块权重分 (20分)
-    # sector_max_inflow_rate 现在代表双表共振后的百分制得分
-    score += min(row.get("sector_max_inflow_rate", 0) * 0.2, 20)
-    
-    # 2. 资金规模分 (25分)
-    score += (row.get("capital_score", 0) * 0.15)
-    score += min(row.get("main_net_ratio", 0), 10)
-    
-    # 3. 资金攻击分 (30分)
-    score += min(row.get("buy_power_ratio", 0) / 100 * 15, 15)
-    score += min(row.get("attack_score", 0) / 100 * 15, 15)
-    
-    # 4. 趋势分 (15分)
-    score += min(row.get("f_mom_20", 0) * 100, 10)
-    score += max(0, 5 - row.get("f_dist_high", 10))
-    
-    # 5. 筹码/量价分 (10分)
-    score += (row.get("chip_score", 0) / 100 * 5)
-    qr = row.get("f_quantity_ratio", 1)
-    if 1.5 <= qr <= 5.5: score += 5
-    
+
+    # --------------------------------------------------------
+    # 1. 恒强板块权重分
+    # 20分
+    # --------------------------------------------------------
+
+    score += min(
+        safe_float(row.get("sector_max_inflow_rate", 0)) * 0.2,
+        20
+    )
+
+    # --------------------------------------------------------
+    # 2. 资金规模分
+    # 25分
+    # --------------------------------------------------------
+
+    score += (
+        safe_float(
+            row.get("capital_score", 0)
+        ) * 0.15
+    )
+
+    score += min(
+        safe_float(
+            row.get("main_net_ratio", 0)
+        ),
+        10
+    )
+
+    # --------------------------------------------------------
+    # 3. 资金攻击分
+    # 30分
+    # --------------------------------------------------------
+
+    score += min(
+        safe_float(
+            row.get("buy_power_ratio", 0)
+        ) / 100 * 15,
+        15
+    )
+
+    score += min(
+        safe_float(
+            row.get("attack_score", 0)
+        ) / 100 * 15,
+        15
+    )
+
+    # --------------------------------------------------------
+    # 4. 趋势分
+    # 15分
+    # --------------------------------------------------------
+
+    score += min(
+        safe_float(
+            row.get("f_mom_20", 0)
+        ) * 100,
+        10
+    )
+
+    score += max(
+        0,
+        5 - safe_float(
+            row.get("f_dist_high", 10)
+        )
+    )
+
+    # --------------------------------------------------------
+    # 5. 筹码 / 量价
+    # 10分
+    # --------------------------------------------------------
+
+    score += (
+        safe_float(
+            row.get("chip_score", 0)
+        ) / 100 * 5
+    )
+
+    qr = safe_float(
+        row.get("f_quantity_ratio", 1)
+    )
+
+    if 1.5 <= qr <= 5.5:
+        score += 5
+
     return round(score, 2)
 
-def save_to_stock_pool(df_selected, trade_date):
-    if df_selected.empty: return
-    now = datetime.datetime.now()
-    records = []
-    for _, row in df_selected.iterrows():
-        tags = {
-            "strategy": "Double_Sector_Persistence",
-            "breadth_days": int(row.get("b_count", 0)),
-            "strength_days": int(row.get("s_count", 0)),
-            "capital_score": int(row["capital_score"]),
-            "profit_ratio": round(float(row["profit_ratio"]), 2),
-            "attack_score": int(row.get("attack_score", 0))
-        }
-        score = row["sort_score"]
-        records.append({
-            "symbol": row["symbol"],
-            "trade_date": trade_date,
-            "stock_name": row["stock_name"],
-            "pool_type": "short",
-            "sector_name": str(row["sector_names"])[:95],
-            "score": score,
-            "status": "四维共振",
-            "tags": json.dumps(tags, ensure_ascii=False),
-            "notes": f"宽度入围{row['b_count']}次, 强度入围{row['s_count']}次。资金分{row['capital_score']}, 获利盘{row['profit_ratio']:.1f}%",
-            "created_at": now, "updated_at": now,
-            "is_watch_focus": 1 if score >= 82 else 0,
-            "watch_level": 3 if score >= 86 else (2 if score >= 78 else 1)
-        })
-        
-    df_save = pd.DataFrame(records)
-    try:
-        with engine_review.begin() as conn:
-            df_save.to_sql("tmp_stock_pool", conn, if_exists="replace", index=False)
-            upsert_sql = text("""
-                INSERT INTO stock_pools (symbol, trade_date, stock_name, pool_type, sector_name, score, status, tags, notes, created_at, updated_at, is_watch_focus, watch_level)
-                SELECT symbol, trade_date, stock_name, pool_type, sector_name, score, status, tags, notes, created_at, updated_at, is_watch_focus, watch_level FROM tmp_stock_pool
-                ON DUPLICATE KEY UPDATE score = VALUES(score), notes = VALUES(notes), tags = VALUES(tags), updated_at = VALUES(updated_at), is_watch_focus = VALUES(is_watch_focus), watch_level = VALUES(watch_level)
-            """)
-            conn.execute(upsert_sql)
-        print(f"✅ 成功同步 {len(df_save)} 只双重验证主线股票")
-    except Exception as e:
-        print(f"❌ 入池失败: {e}")
 
-def select_stocks_smart_match():
-    today = get_latest_trade_date()
-    print(f"🚀 启动四维共振选股 (双表回溯Top15版)，基准日期: {today}\n")
+# ============================================================
+# 11. 四维共振股票过滤
+# ============================================================
 
-    # 1. 获取日期
-    with engine.connect() as conn:
-        date_query = text("SELECT DISTINCT trade_date FROM stk_daily_kline ORDER BY trade_date DESC LIMIT 7")
-        last_7_dates = [row[0].strftime('%Y-%m-%d') for row in conn.execute(date_query).fetchall()]
-    dates_str = ",".join([f"'{d}'" for d in last_7_dates])
+def filter_4d_stocks(df_all):
 
-    # 2. 统计【宽度表】Top 15 次数
-    breadth_sql = f"""
-        SELECT sector_name, COUNT(*) as b_count 
-        FROM stk_sector_breadths 
-        WHERE trade_date IN ({dates_str}) AND rank_pos <= 15 AND sector_type = 'industry'
-        GROUP BY sector_name
+    if df_all.empty:
+        return df_all
+
+    # ========================================================
+    # 1. 趋势条件
+    # ========================================================
+
+    cond_trend = (
+        (df_all["f_mom_20"] > 0)
+        &
+        (df_all["f_macd_dif"] > df_all["f_macd_dea"])
+        &
+        (df_all["f_macd_hist"] > 0)
+        &
+        (df_all["close"] > df_all["f_bb_m"])
+    )
+
+    # ========================================================
+    # 2. 资金条件
+    # ========================================================
+
+    cond_fund = (
+        (df_all["main_net_inflow"] > 0)
+        &
+        (df_all["inflow_3d"] > 0)
+        &
+        (df_all["capital_score"] >= 70)
+        &
+        (df_all["buy_power_ratio"] >= 55)
+        &
+        (df_all["volume_power_ratio"] >= 1.1)
+    )
+
+    # ========================================================
+    # 3. 筹码条件
+    # ========================================================
+
+    cond_chip = (
+        (df_all["profit_ratio"] > 60)
+        &
+        (df_all["chip_score"] > 60)
+    )
+
+    # ========================================================
+    # 4. 量价条件
+    # ========================================================
+
+    cond_vol = (
+        (df_all["close"] > df_all["open"])
+        &
+        (
+            df_all["close"] /
+            df_all["open"] > 1.015
+        )
+        &
+        (
+            df_all["f_quantity_ratio"].between(
+                1.5,
+                6.0
+            )
+        )
+        &
+        (
+            df_all["turnover_rate"].between(
+                0.015,
+                0.20
+            )
+        )
+    )
+
+    # ========================================================
+    # 5. 攻击条件
+    # ========================================================
+
+    cond_atk = (
+        (df_all["attack_score"] >= 70)
+        &
+        (df_all["buy_power_ratio"] >= 60)
+    )
+
+    # ========================================================
+    # 最终四维共振
+    # ========================================================
+
+    df_sel = df_all[
+        cond_fund
+        &
+        cond_trend
+        &
+        cond_chip
+        &
+        cond_vol
+        &
+        cond_atk
+    ].copy()
+
+    return df_sel
+
+
+# ============================================================
+# 12. 每个板块选择一个龙头
+# ============================================================
+
+def select_sector_leaders(
+    df_all,
+    selected_sectors
+):
     """
-    df_b = pd.read_sql(text(breadth_sql), engine_review)
+    核心逻辑：
 
-    # 3. 统计【强度表】Top 15 次数
-    scores_sql = f"""
-        SELECT sector_name, COUNT(*) as s_count 
-        FROM stk_sector_scores 
-        WHERE trade_date IN ({dates_str}) AND rank_pos <= 15
-        GROUP BY sector_name
+    每一个 Top5 板块单独寻找自己的龙头。
+
+    例如：
+
+        国资云
+        通信
+        计算机
+
+    分别过滤属于该板块的股票。
+
+    然后：
+
+        四维共振条件
+            ↓
+        calc_4d_score
+            ↓
+        最高分 = 龙头
+
+    注意：
+
+    同一只股票如果属于两个板块，
+    它可以分别成为两个板块的龙头。
+
+    因为当前规则是：
+
+        每个板块一个龙头
+
+    而不是：
+
+        全部板块只能有一个股票。
     """
-    df_s = pd.read_sql(text(scores_sql), engine_review)
 
-    # 4. 合并双表回溯结果
-    df_strong_sectors = pd.merge(df_b, df_s, on='sector_name', how='outer').fillna(0)
-    
-    # 恒强逻辑：在任意一张表里出现 >= 3 次
-    df_strong_sectors = df_strong_sectors[(df_strong_sectors['b_count'] >= 3) | (df_strong_sectors['s_count'] >= 3)]
-    
-    if df_strong_sectors.empty:
-        print("❌ 当前市场混沌，无恒强板块。")
+    if df_all.empty:
+        return pd.DataFrame()
+
+    leaders = []
+
+    for _, sector_row in selected_sectors.iterrows():
+
+        sector = sector_row["sector_name"]
+
+        # ----------------------------------------------------
+        # 找属于当前板块的股票
+        # ----------------------------------------------------
+
+        sector_df = df_all[
+            df_all["sector_names"].apply(
+                lambda x: sector in x
+            )
+        ].copy()
+
+        if sector_df.empty:
+            print(
+                f"[WARN] 板块 {sector} 没有候选股票"
+            )
+            continue
+
+        # ----------------------------------------------------
+        # 四维共振过滤
+        # ----------------------------------------------------
+
+        sector_df = filter_4d_stocks(
+            sector_df
+        )
+
+        if sector_df.empty:
+            print(
+                f"[WARN] 板块 {sector} "
+                f"没有股票满足四维共振条件"
+            )
+            continue
+
+        # ----------------------------------------------------
+        # 计算四维评分
+        # ----------------------------------------------------
+
+        sector_df["sort_score"] = sector_df.apply(
+            calc_4d_score,
+            axis=1
+        )
+
+        # ----------------------------------------------------
+        # 最高分作为当前板块龙头
+        # ----------------------------------------------------
+
+        sector_df = sector_df.sort_values(
+            "sort_score",
+            ascending=False
+        )
+
+        leader = sector_df.iloc[0].copy()
+
+        leader["selected_sector"] = sector
+        leader["source_type"] = sector_row[
+            "source_type"
+        ]
+        leader["rank_change"] = safe_float(
+            sector_row["rank_change"]
+        )
+        leader["sector_rank_pos"] = int(
+            sector_row["rank_pos"]
+        )
+        leader["sector_snapshot_time"] = (
+            sector_row["snapshot_time"]
+        )
+
+        leaders.append(leader)
+
+        print()
+        print(
+            f"[龙头] "
+            f"{sector:<20} "
+            f"{leader['symbol']:<12} "
+            f"{leader['stock_name']:<12} "
+            f"四维评分={leader['sort_score']:.2f} "
+            f"来源={leader['source_type']} "
+            f"rank_change={leader['rank_change']:.0f}"
+        )
+
+    if not leaders:
+        return pd.DataFrame()
+
+    return pd.DataFrame(leaders)
+
+
+# ============================================================
+# 13. 保存到 stock_pools
+# ============================================================
+
+def save_to_stock_pool(
+    leaders,
+    trade_date
+):
+    """
+    保存到：
+
+        trading_review.stock_pools
+
+    status：
+
+        四维共振
+
+    不再使用：
+
+        combined_rank_change
+        breadth_rank_change
+        score_rank_change
+
+    因为两个 Top5 是独立计算的。
+    """
+
+    if leaders.empty:
+        print()
+        print("[INFO] 没有符合条件的板块龙头，不写入 stock_pools")
         return
 
-    # 计算板块最终权重分 (100分制)
-    # 逻辑：两表出现次数之和 / 14 * 100
-    df_strong_sectors['weight_score'] = ((df_strong_sectors['b_count'] + df_strong_sectors['s_count']) / 14 * 100).clip(0, 100)
-    
-    sector_score_map = dict(zip(df_strong_sectors['sector_name'], df_strong_sectors['weight_score']))
-    sector_b_map = dict(zip(df_strong_sectors['sector_name'], df_strong_sectors['b_count']))
-    sector_s_map = dict(zip(df_strong_sectors['sector_name'], df_strong_sectors['s_count']))
+    print()
+    print("=" * 80)
+    print("【保存】写入 stock_pools")
+    print("=" * 80)
 
-    clean_sectors = df_strong_sectors['sector_name'].tolist()
-    print(f"🔥 识别到恒强共振主线: {', '.join(clean_sectors)}")
+    sql = text("""
+        INSERT INTO stock_pools (
+            symbol,
+            trade_date,
+            stock_name,
+            pool_type,
+            sector_name,
+            score,
+            status,
+            tags,
+            notes,
+            created_at,
+            updated_at,
+            is_watch_focus,
+            watch_level
+        )
+        VALUES (
+            :symbol,
+            :trade_date,
+            :stock_name,
+            :pool_type,
+            :sector_name,
+            :score,
+            :status,
+            :tags,
+            :notes,
+            NOW(),
+            NOW(),
+            :is_watch_focus,
+            :watch_level
+        )
+        ON DUPLICATE KEY UPDATE
 
-    # 5. 匹配个股映射
-    db_sectors = pd.read_sql("SELECT DISTINCT sector_name FROM stock_sector_relation", engine)['sector_name'].tolist()
-    matched_db_sectors = [db for db in db_sectors if any(clean in db for clean in clean_sectors)]
-    
-    if not matched_db_sectors: return
+            stock_name = VALUES(stock_name),
+            sector_name = VALUES(sector_name),
+            score = VALUES(score),
+            tags = VALUES(tags),
+            notes = VALUES(notes),
+            updated_at = NOW()
+    """)
 
-    sectors_str = ",".join([f"'{s}'" for s in matched_db_sectors])
-    basic_sql = f"""
-        SELECT r.symbol, s.name AS stock_name, GROUP_CONCAT(r.sector_name SEPARATOR ' | ') AS sector_names
-        FROM stock_sector_relation r JOIN stocks s ON r.symbol = s.symbol
-        WHERE r.sector_name IN ({sectors_str}) AND s.name NOT LIKE '%%ST%%' AND s.name NOT LIKE '%%退%%'
-        GROUP BY r.symbol, s.name
-    """
-    df_basic = pd.read_sql(text(basic_sql), engine)
-    
-    # 注入板块信息
-    def get_info(names, info_map):
-        vals = [info_map.get(n.strip().replace('行业-',''), 0) for n in str(names).split('|')]
-        return max(vals) if vals else 0
+    rows = []
 
-    df_basic['sector_max_inflow_rate'] = df_basic['sector_names'].apply(lambda x: get_info(x, sector_score_map))
-    df_basic['b_count'] = df_basic['sector_names'].apply(lambda x: get_info(x, sector_b_map))
-    df_basic['s_count'] = df_basic['sector_names'].apply(lambda x: get_info(x, sector_s_map))
+    for _, row in leaders.iterrows():
 
-    # 6. 获取因子、K线、资金、筹码
-    syms = ",".join([f"'{s}'" for s in df_basic['symbol'].tolist()])
-    df_fac = pd.read_sql(f"SELECT symbol, f_mom_20, f_macd_dif, f_macd_dea, f_macd_hist, f_bb_m, f_quantity_ratio, f_dist_high FROM stk_factors WHERE trade_date='{today}' AND symbol IN ({syms})", engine)
-    df_k = pd.read_sql(f"SELECT symbol, open, close, turnover_rate FROM stk_daily_kline WHERE trade_date='{today}' AND symbol IN ({syms})", engine)
-    df_fund = pd.read_sql(f"SELECT symbol, main_net_inflow, main_net_ratio, inflow_3d, buy_power_ratio, attack_score, capital_score, volume_power_ratio FROM stk_stock_fund_flow WHERE trade_date='{today}' AND symbol IN ({syms})", engine)
-    df_chip = pd.read_sql(f"SELECT symbol, profit_ratio, chip_score FROM stk_chip_factor WHERE trade_date='{today}' AND symbol IN ({syms})", engine)
+        symbol = str(row["symbol"])
+        stock_name = str(row["stock_name"])
+        sector = str(row["selected_sector"])
 
-    # 7. 合并与过滤
-    df_all = df_basic.merge(df_fac, on='symbol').merge(df_k, on='symbol').merge(df_fund, on='symbol').merge(df_chip, on='symbol').dropna()
-    
-    cond_trend = (df_all['f_mom_20'] > 0) & (df_all['f_macd_dif'] > df_all['f_macd_dea']) & (df_all['f_macd_hist'] > 0) & (df_all['close'] > df_all['f_bb_m'])
-    cond_fund = (df_all['main_net_inflow'] > 0) & (df_all['inflow_3d'] > 0) & (df_all['capital_score'] >= 70) & (df_all['buy_power_ratio'] >= 55) & (df_all['volume_power_ratio'] >= 1.1)
-    cond_chip = (df_all['profit_ratio'] > 60) & (df_all['chip_score'] > 60)
-    cond_vol = (df_all['close'] > df_all['open']) & (df_all['close']/df_all['open'] > 1.015) & (df_all['f_quantity_ratio'].between(1.5, 6.0)) & (df_all['turnover_rate'].between(0.015, 0.20))
-    cond_atk = (df_all["attack_score"] >= 70) & (df_all["buy_power_ratio"] >= 60)
+        score = safe_float(
+            row.get("sort_score", 0)
+        )
 
-    df_sel = df_all[cond_fund & cond_trend & cond_chip & cond_vol & cond_atk].copy()
+        source_type = str(
+            row.get("source_type", "")
+        )
 
-    # 8. 评分与入库
-    if not df_sel.empty:
-        df_sel['sort_score'] = df_sel.apply(calc_4d_score, axis=1)
-        df_sel = df_sel.sort_values('sort_score', ascending=False)
-        save_to_stock_pool(df_sel.head(50), today)
-        print(df_sel[['symbol', 'stock_name', 'sort_score', 'b_count', 's_count']].head(15).to_string(index=False))
-    else:
-        print("❌ 今日未发现符合双验证共振条件的个股。")
+        rank_change = safe_float(
+            row.get("rank_change", 0)
+        )
+
+        rank_pos = int(
+            row.get("sector_rank_pos", 0)
+        )
+
+        snapshot_time = row.get(
+            "sector_snapshot_time"
+        )
+
+        capital_score = safe_float(
+            row.get("capital_score", 0)
+        )
+
+        profit_ratio = safe_float(
+            row.get("profit_ratio", 0)
+        )
+
+        attack_score = safe_float(
+            row.get("attack_score", 0)
+        )
+
+        buy_power_ratio = safe_float(
+            row.get("buy_power_ratio", 0)
+        )
+
+        chip_score = safe_float(
+            row.get("chip_score", 0)
+        )
+
+        tags = (
+            f"策略={STATUS},"
+            f"来源={source_type},"
+            f"板块排名变化={rank_change:.0f},"
+            f"板块排名={rank_pos},"
+            f"资金评分={capital_score:.2f},"
+            f"筹码评分={chip_score:.2f},"
+            f"攻击评分={attack_score:.2f}"
+        )
+
+        notes = (
+            f"板块={sector};"
+            f"板块来源={source_type};"
+            f"rank_change={rank_change:.0f};"
+            f"rank_pos={rank_pos};"
+            f"snapshot_time={snapshot_time};"
+            f"四维评分={score:.2f};"
+            f"capital_score={capital_score:.2f};"
+            f"profit_ratio={profit_ratio:.2f};"
+            f"attack_score={attack_score:.2f};"
+            f"buy_power_ratio={buy_power_ratio:.2f};"
+            f"chip_score={chip_score:.2f}"
+        )
+
+        rows.append({
+            "symbol": symbol,
+            "trade_date": trade_date,
+            "stock_name": stock_name,
+
+            # 保持原来的 pool_type
+            "pool_type": "short",
+
+            "sector_name": sector,
+            "score": score,
+            "status": STATUS,
+
+            "tags": tags,
+            "notes": notes,
+
+            # 龙头建议默认重点观察
+            "is_watch_focus": 1,
+            "watch_level": 1
+        })
+
+    if not rows:
+        return
+
+    with review_engine.begin() as conn:
+
+        for row in rows:
+
+            conn.execute(
+                sql,
+                row
+            )
+
+    print()
+    print(
+        f"[OK] 成功写入 / 更新 "
+        f"{len(rows)} 个板块龙头"
+    )
+
+
+# ============================================================
+# 14. 打印最终结果
+# ============================================================
+
+def print_final_result(
+    selected_sectors,
+    leaders
+):
+    print()
+    print()
+    print("=" * 100)
+    print("最终结果")
+    print("=" * 100)
+
+    print()
+    print("【Top5 + Top5 去重后的板块】")
+
+    print(
+        f"{'序号':<6}"
+        f"{'板块':<22}"
+        f"{'来源':<8}"
+        f"{'Rank变化':<10}"
+        f"{'Rank':<8}"
+    )
+
+    print("-" * 100)
+
+    for idx, row in selected_sectors.iterrows():
+
+        print(
+            f"{idx + 1:<6}"
+            f"{str(row['sector_name']):<22}"
+            f"{str(row['source_type']):<8}"
+            f"{safe_float(row['rank_change']):<10.0f}"
+            f"{int(row['rank_pos']):<8}"
+        )
+
+    print()
+    print("【每个板块一个龙头】")
+
+    if leaders.empty:
+        print("没有找到符合四维共振条件的龙头。")
+        return
+
+    print(
+        f"{'序号':<6}"
+        f"{'板块':<20}"
+        f"{'股票':<12}"
+        f"{'名称':<12}"
+        f"{'四维评分':<10}"
+        f"{'来源':<8}"
+        f"{'Rank变化':<10}"
+    )
+
+    print("-" * 100)
+
+    for idx, row in leaders.iterrows():
+
+        print(
+            f"{idx + 1:<6}"
+            f"{str(row['selected_sector']):<20}"
+            f"{str(row['symbol']):<12}"
+            f"{str(row['stock_name']):<12}"
+            f"{safe_float(row['sort_score']):<10.2f}"
+            f"{str(row['source_type']):<8}"
+            f"{safe_float(row['rank_change']):<10.0f}"
+        )
+
+
+# ============================================================
+# 15. 主程序
+# ============================================================
+
+def main():
+
+    print()
+    print("=" * 100)
+    print("四维共振 - Top5 板块龙头选股")
+    print("=" * 100)
+
+    print(
+        f"交易日期: {TODAY}"
+    )
+
+    print()
+    print(
+        "规则："
+        "stk_sector_scores 独立 Top5 + "
+        "stk_sector_breadths 独立 Top5"
+    )
+
+    print(
+        "规则：每个板块只寻找一个四维共振龙头"
+    )
+
+    print(
+        "规则：不合并两个表的 rank_change"
+    )
+
+    # ========================================================
+    # Step 1
+    # scores Top5
+    # ========================================================
+
+    df_score_top5 = get_top5_from_scores(
+        TODAY
+    )
+
+    # ========================================================
+    # Step 2
+    # breadths Top5
+    # ========================================================
+
+    df_breadth_top5 = get_top5_from_breadths(
+        TODAY
+    )
+
+    # ========================================================
+    # Step 3
+    # 两组 Top5 去重板块
+    # ========================================================
+
+    selected_sectors = build_selected_sectors(
+        df_score_top5,
+        df_breadth_top5
+    )
+
+    if selected_sectors.empty:
+
+        print()
+        print(
+            "[STOP] 今天没有找到任何 Top5 板块"
+        )
+
+        return
+
+    print()
+    print("=" * 80)
+    print(
+        f"最终需要寻找龙头的板块数量："
+        f"{len(selected_sectors)}"
+    )
+    print("=" * 80)
+
+    # ========================================================
+    # Step 4
+    # 获取所有目标板块股票
+    # ========================================================
+
+    sectors = selected_sectors[
+        "sector_name"
+    ].tolist()
+
+    stock_mapping = get_sector_stocks(
+        sectors
+    )
+
+    if stock_mapping.empty:
+
+        print()
+        print(
+            "[STOP] Top5 板块没有找到股票"
+        )
+
+        return
+
+    print()
+    print(
+        f"目标板块股票数量："
+        f"{len(stock_mapping)}"
+    )
+
+    # ========================================================
+    # Step 5
+    # 获取股票数据
+    # ========================================================
+
+    symbols = stock_mapping[
+        "symbol"
+    ].dropna().unique().tolist()
+
+    print()
+    print(
+        f"开始加载 {len(symbols)} 只股票的四维数据..."
+    )
+
+    df_fac = get_stock_factors(
+        symbols,
+        TODAY
+    )
+
+    df_k = get_stock_kline(
+        symbols,
+        TODAY
+    )
+
+    df_fund = get_stock_fund_flow(
+        symbols,
+        TODAY
+    )
+
+    df_chip = get_stock_chip(
+        symbols,
+        TODAY
+    )
+
+    # ========================================================
+    # Step 6
+    # 合并股票数据
+    # ========================================================
+
+    df_all = stock_mapping.copy()
+
+    if not df_fac.empty:
+
+        df_all = df_all.merge(
+            df_fac,
+            on="symbol",
+            how="left"
+        )
+
+    if not df_k.empty:
+
+        df_all = df_all.merge(
+            df_k,
+            on="symbol",
+            how="left"
+        )
+
+    if not df_fund.empty:
+
+        df_all = df_all.merge(
+            df_fund,
+            on="symbol",
+            how="left"
+        )
+
+    if not df_chip.empty:
+
+        df_all = df_all.merge(
+            df_chip,
+            on="symbol",
+            how="left"
+        )
+
+    # ========================================================
+    # Step 7
+    # 数值字段处理
+    # ========================================================
+
+    numeric_columns = [
+        "f_mom_20",
+        "f_macd_dif",
+        "f_macd_dea",
+        "f_macd_hist",
+        "f_bb_m",
+        "f_quantity_ratio",
+        "f_dist_high",
+
+        "open",
+        "close",
+        "turnover_rate",
+
+        "main_net_inflow",
+        "main_net_ratio",
+        "inflow_3d",
+        "buy_power_ratio",
+        "attack_score",
+        "capital_score",
+        "volume_power_ratio",
+
+        "profit_ratio",
+        "chip_score"
+    ]
+
+    for col in numeric_columns:
+
+        if col not in df_all.columns:
+            df_all[col] = 0.0
+
+        df_all[col] = pd.to_numeric(
+            df_all[col],
+            errors="coerce"
+        ).fillna(0.0)
+
+    # ========================================================
+    # 原逻辑需要 sector_max_inflow_rate
+    #
+    # 如果原查询没有该字段，默认 0
+    #
+    # 不改变原有 calc_4d_score 结构
+    # ========================================================
+
+    if "sector_max_inflow_rate" not in df_all.columns:
+
+        df_all["sector_max_inflow_rate"] = 0.0
+
+    # ========================================================
+    # Step 8
+    # 每个板块独立找龙头
+    # ========================================================
+
+    leaders = select_sector_leaders(
+        df_all,
+        selected_sectors
+    )
+
+    # ========================================================
+    # Step 9
+    # 保存
+    # ========================================================
+
+    save_to_stock_pool(
+        leaders,
+        TODAY
+    )
+
+    # ========================================================
+    # Step 10
+    # 打印
+    # ========================================================
+
+    print_final_result(
+        selected_sectors,
+        leaders
+    )
+
+    print()
+    print("=" * 100)
+    print("四维共振选股完成")
+    print("=" * 100)
+
+
+# ============================================================
+# 程序入口
+# ============================================================
 
 if __name__ == "__main__":
-    select_stocks_smart_match()
+
+    try:
+
+        main()
+
+    except Exception as e:
+
+        print()
+        print("=" * 100)
+        print("[ERROR] 程序执行失败")
+        print("=" * 100)
+
+        print(
+            f"{type(e).__name__}: {e}"
+        )
+
+        raise

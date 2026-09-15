@@ -88,8 +88,8 @@ def is_within_running_window():
 
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
-    is_morning = ("10:00" <= current_time < "11:30")
-    is_afternoon = ("13:00" <= current_time < "15:30")
+    is_morning = ("09:45" <= current_time < "11:40")
+    is_afternoon = ("13:10" <= current_time < "15:30")
     
     if is_morning:
         return True, "早盘运行中"
@@ -185,7 +185,7 @@ def main_loop():
             if success:
                 cycle_count += 1
             
-            # 每一轮跑完后微调休息 5 分钟，防止极端情况下 CPU 负载过高
+            # 每一轮跑完后微调休息 6 分钟，防止极端情况下 CPU 负载过高
             time.sleep(300)
         else:
             # 如果没到 10:00 或者处于午休
