@@ -43,7 +43,7 @@ PIPELINE_QUEUE = [
     # 资金流入板块 四维共振
     r"c:\ws\trading-polices\Watchlist\QWEN_4D_STOCKS.py",
     # 100% 获胜板块 四维共振
-    r"c:\ws\trading-polices\Watchlist\SECTOR_100_4D_STOCKS.py",
+    # r"c:\ws\trading-polices\Watchlist\SECTOR_100_4D_STOCKS.py",
     # macd + boll 中轨
     r"c:\ws\trading-polices\Watchlist\STRATEGY_TREND_FOLLOWING.py",
     # 主力入场
@@ -88,7 +88,7 @@ def is_within_running_window():
 
     # 2. 定义运行窗口
     # 10:00开始, 11:30-13:30休息, 16:00以后停止
-    is_morning = ("09:45" <= current_time < "11:40")
+    is_morning = ("09:42" <= current_time < "11:40")
     is_afternoon = ("13:10" <= current_time < "15:30")
     
     if is_morning:
@@ -123,6 +123,18 @@ def run_one_cycle(cycle_count):
             print(f"⏳ 跳过任务: {script_name} (原因: 10:45后不再清理数据库,只开盘清理一次)")
             continue
 
+         # 逻辑：如果路径中包含 "calculate_sector_scores" 字符串，且当前时间 >= 15:00
+        if "calculate_sector_scores" in script_path and now_time >= datetime.time(15, 00):
+            script_name = os.path.basename(script_path)
+            print(f"⏳ 跳过任务: {script_name} (原因: 15:00后不再snapshot 板块score信息)")
+            continue
+
+         # 逻辑：如果路径中包含 "sync_sector_breadths" 字符串，且当前时间 >= 15:00
+        if "sync_sector_breadths" in script_path and now_time >= datetime.time(15, 00):
+            script_name = os.path.basename(script_path)
+            print(f"⏳ 跳过任务: {script_name} (原因: 15:00后不再snapshot 板块breadth信息)")
+            continue
+            
         script_name = os.path.basename(script_path)
         print(f"▶️  [{i}/{len(PIPELINE_QUEUE)}] 正在执行: {script_name}...")
         

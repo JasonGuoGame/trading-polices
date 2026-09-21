@@ -154,25 +154,31 @@ def calculate_sector_scores_v4():
     # ---------------------------------------------------------
 
     def map_to_official(db_name):
-
+        # 统一清洗两边的名称（去除“行业-”、“概念-”、“概念”、“行业”等后缀/前缀）
         clean_name = (
-            db_name
-            .replace('行业-', '')
-            .replace('概念-', '')
-            .replace('Ⅱ', '')
-            .replace('Ⅲ', '')
+            db_name.replace("行业-", "")
+            .replace("概念-", "")
+            .replace("Ⅱ", "")
+            .replace("Ⅲ", "")
+            .replace("概念", "")
+            .replace("行业", "")
             .strip()
         )
 
-        if clean_name in official_sector_list:
+        if not clean_name:
+            return None
 
-            return clean_name
-
+        # 优先精确/双向包含校验
         for off_name in official_sector_list:
+            clean_off_name = off_name.replace("概念", "").replace("行业", "").strip()
 
-            if off_name in clean_name:
-
-                return off_name
+            # 如果清洗后的名称一致，或者存在相互包含关系
+            if (
+                clean_name == clean_off_name
+                or clean_name in off_name
+                or off_name in clean_name
+            ):
+                return off_name  # 返回资金流表中对应的官方板块名称 (如 'MLCC概念')
 
         return None
 

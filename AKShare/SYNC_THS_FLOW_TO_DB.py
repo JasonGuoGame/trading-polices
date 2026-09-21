@@ -87,15 +87,26 @@ def sync_sector_flow_from_stock_table():
 
         # --- D. 名称对齐函数 ---
         def align_to_official(raw_name):
-            name = raw_name.replace('行业-', '').replace('概念-', '').replace('Ⅱ', '').replace('Ⅲ', '').strip()
-            if name in official_names: return name
+            # 清洗掉前缀和层级标识
+            clean_name = raw_name.replace('行业-', '').replace('概念-', '').replace('Ⅱ', '').replace('Ⅲ', '').strip()
+            
+            # 1. 精确匹配
+            if clean_name in official_names:
+                return clean_name
+                
+            # 2. 双向包含匹配
             for off_n in official_names:
-                if off_n in name: return off_n
+                # 情况A：官方名包含在数据库名中（如 official="半导体", raw="半导体板块"）
+                # 情况B：数据库名包含在官方名中（如 official="MLCC概念", raw="概念-MLCC" 清洗后为 "MLCC"）
+                if off_n in clean_name or clean_name in off_n:
+                    return off_n
+                    
             return None
 
         df_raw['official_name'] = df_raw['db_sector_name'].apply(align_to_official)
         df_raw = df_raw.dropna(subset=['official_name'])
-
+        
+        
         # --- E. 按板块聚合（含去重逻辑） ---
         results_list = []
         for official_name, group in df_raw.groupby('official_name'):
