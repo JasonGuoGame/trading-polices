@@ -499,7 +499,7 @@ def calculate_sector_scores_v4():
                     float(
                         f['net_inflow_rate']
                     )
-                    * 2,
+                    * 1,
                     0
                 ),
                 10
